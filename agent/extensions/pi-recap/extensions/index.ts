@@ -186,7 +186,7 @@ export default function (pi: ExtensionAPI) {
 
   function buildSections(): Array<{ icon: string; label: string; text: string }> {
     const sections: Array<{ icon: string; label: string; text: string }> = [];
-    if (currentRecap) {
+    if (!agentRunning && currentRecap) {
       sections.push({ icon: "✦", label: "Recap:", text: currentRecap });
     }
     if (agentRunning) {

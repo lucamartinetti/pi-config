@@ -1,9 +1,9 @@
 # @fradser/pi-recap
 
-> Local fork. Keeps the previous `✦ Recap:` visible during regeneration and,
-> while a run is active, adds an inferred `◐ Goal:` line (one model call at
-> start, then at most one per 30s) plus free `💭 Thinking:` and `↳ Trail:` lines.
-> See `~/.pi/README.md` for how it is wired up.
+> Local fork. While a run is active it hides the previous `✦ Recap:` and shows an
+> inferred `◐ Goal:` (one model call at start, then at most one per 30s) plus free
+> `💭 Thinking:` and `↳ Trail:` lines; when the run settles those clear and the
+> `✦ Recap:` returns. See `~/.pi/README.md` for how it is wired up.
 
 Session recap for Pi — displays a concise, scannable summary of the current session above the TUI input box, inspired by Claude Code's `✦ Recap:` feature.
 
