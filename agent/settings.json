@@ -1,0 +1,16 @@
+{
+  "defaultProvider": "openrouter",
+  "defaultModel": "deepseek/deepseek-v4.1-flash:nitro",
+  "lastChangelogVersion": "1.3.0",
+  "theme": "light",
+  "enabledModels": [
+    "openrouter/deepseek/deepseek-v4.1-flash:nitro",
+    "*/*"
+  ],
+  "packages": [
+    "npm:@tintinweb/pi-subagents",
+    "npm:@fradser/pi-recap",
+    "npm:@mrclrchtr/supi-prompt-suggestions",
+    "npm:@mrclrchtr/supi-settings"
+  ]
+}

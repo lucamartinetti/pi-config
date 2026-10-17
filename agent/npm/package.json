@@ -1,0 +1,10 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "dependencies": {
+    "@fradser/pi-recap": "^0.1.11",
+    "@mrclrchtr/supi-prompt-suggestions": "^9.1.1",
+    "@mrclrchtr/supi-settings": "^9.1.1",
+    "@tintinweb/pi-subagents": "^0.22.0"
+  }
+}

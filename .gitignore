@@ -1,0 +1,15 @@
+# Secrets and credentials
+agent/auth.json
+
+# Regenerable caches / large binaries
+agent/models-store.json
+agent/bin/
+
+# Installed extension code — reproducible from agent/npm/package-lock.json + settings.json
+agent/npm/node_modules/
+
+# Session transcripts (private; intentionally not backed up here)
+agent/sessions/
+
+# Runtime state
+agent/pi-subagents/

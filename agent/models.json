@@ -1,0 +1,17 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "openrouter": {
+      "models": [
+        {
+          "id": "deepseek/deepseek-v4.1-flash:nitro",
+          "name": "DeepSeek V4.1 Flash (nitro)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 943718
+        }
+      ]
+    }
+  }
+}
