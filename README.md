@@ -11,12 +11,10 @@ agent/
   models.json          # custom model definitions
   recap.json           # @fradser/pi-recap config (✦ Recap line)
   supi/config.json     # @mrclrchtr/supi-prompt-suggestions config (ghost text)
-  pi-progress.jsonc    # @brettinternet/pi-progress config (live activity + inference)
   agents/              # custom subagents (planner, reviewer, scout, worker)
   prompts/             # prompt templates (empty)
   extensions/          # local extensions
     reload-runtime.ts  # /reload-runtime + reload_runtime tool
-    pi-progress/       # vendored @brettinternet/pi-progress (patched)
   npm/                 # extension dependency manifest + lockfile
 ```
 
@@ -32,18 +30,9 @@ Declared in `agent/settings.json` (`packages`) and pinned in
 | `@mrclrchtr/supi-prompt-suggestions` | Ghost-text next-prompt suggestions |
 | `@mrclrchtr/supi-settings` | `/supi-settings` UI (required by the above) |
 
-### Vendored extensions
-
-`agent/extensions/pi-progress/` is a copy of `@brettinternet/pi-progress`
-(v0.1.6), loaded as a local extension instead of an npm package. The only
-behavioral change is that the progress widget renders **only while a run is
-active**; once the agent settles it is hidden and the recap reports the
-finished round. `config.ts` was also changed to parse plain JSON, dropping the
-`jsonc-parser` dependency so the vendored copy is self-contained.
-
 ### Model notes
 
-Recap, prompt suggestions, and pi-progress inference use the main model
+Recap and prompt suggestions use the main model
 (`openrouter/deepseek/deepseek-v4.1-flash:nitro`).
 
 `settings.json` sets `enabledModels` explicitly. This is required: the
