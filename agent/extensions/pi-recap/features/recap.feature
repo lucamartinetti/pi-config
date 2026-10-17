@@ -37,9 +37,19 @@ Feature: Session Recap
     Given an active TUI session with a recap of the previous step
     When the user submits a prompt and the agent starts running
     Then the widget keeps showing the previous step's "✦ Recap:" line
-    And it adds a "◐ Goal:" line derived from the current prompt
+    And it adds a "◐ Goal:" line inferred from the run's activity
+    And it adds a "💭 Thinking:" excerpt of the latest assistant reasoning
+    And it adds a "↳ Trail:" sequence of recent tool actions
     When the run settles
-    Then the goal line is cleared and the recap is refreshed with the completed step
+    Then the running lines are cleared and the recap is refreshed with the completed step
+
+  Scenario: Goal inference is throttled during a run
+    Given a running agent with goal inference enabled
+    When the run starts
+    Then one objective inference is requested immediately
+    And activity within 30 seconds does not request another inference
+    And at most one inference is in flight at a time
+    And the inferred objective is dropped when the run settles
 
   Scenario: Recap is informative and scannable
     Given a raw model summary

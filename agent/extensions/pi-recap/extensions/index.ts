@@ -50,22 +50,18 @@ import {
   getLastExchange,
   type RecapSessionEntry,
 } from "./recap";
+import {
+  extractAssistantParts,
+  generateGoal,
+  GOAL_INFERENCE_INTERVAL_MS,
+  RunDigest,
+  thinkingExcerpt,
+} from "./goal";
 
 let config: RecapConfig = readRecapConfig();
 
 function configuredModelLabel(): string {
   return modelRef(config) ?? "session default";
-}
-
-/**
- * Derive the current step's goal directly from the user prompt. This is a
- * cheap, zero-inference label that complements the generated recap of the
- * previous step while a run is active.
- */
-function goalFromPrompt(prompt: string): string {
-  const text = prompt.replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  return text.length > 120 ? `${text.slice(0, 119).trimEnd()}\u2026` : text;
 }
 
 function availableModels(ctx: ExtensionContext) {
@@ -162,10 +158,17 @@ export default function (pi: ExtensionAPI) {
     leadingSpaces: 1,
     fallbackActivity: "",
   });
+  const goalDigest = new RunDigest();
   let shouldRecap = false;
   let currentGoal = "";
+  let currentThinking = "";
   let agentRunning = false;
   let generatingRecap = false;
+  let goalInferenceAt = 0;
+  let goalInferenceInFlight = false;
+  let goalInferenceController: AbortController | undefined;
+  let goalTimer: ReturnType<typeof setInterval> | undefined;
+  let lastThinkingPaint = 0;
   let activeRequest:
     | {
         key: string;
@@ -181,6 +184,81 @@ export default function (pi: ExtensionAPI) {
     updateRecapWidget(ctx);
   }
 
+  function buildSections(): Array<{ icon: string; label: string; text: string }> {
+    const sections: Array<{ icon: string; label: string; text: string }> = [];
+    if (currentRecap) {
+      sections.push({ icon: "✦", label: "Recap:", text: currentRecap });
+    }
+    if (agentRunning) {
+      if (currentGoal) {
+        sections.push({ icon: "◐", label: "Goal:", text: currentGoal });
+      }
+      if (currentThinking) {
+        sections.push({ icon: "💭", label: "Thinking:", text: currentThinking });
+      }
+      const trail = goalDigest.trail();
+      if (trail) {
+        sections.push({ icon: "↳", label: "Trail:", text: trail });
+      }
+    }
+    return sections;
+  }
+
+  function stopGoalTimer(): void {
+    if (goalTimer !== undefined) clearInterval(goalTimer);
+    goalTimer = undefined;
+  }
+
+  function cancelGoalInference(): void {
+    goalInferenceController?.abort();
+    goalInferenceController = undefined;
+    goalInferenceInFlight = false;
+  }
+
+  async function inferGoal(ctx: ExtensionContext): Promise<void> {
+    if (!config.enabled || !agentRunning || ctx.mode !== "tui") return;
+    if (goalInferenceInFlight) return;
+    const now = Date.now();
+    if (now - goalInferenceAt < GOAL_INFERENCE_INTERVAL_MS) return;
+    if (!goalDigest.meaningful()) return;
+    const model = resolveRecapModel(ctx);
+    if (!model) return;
+
+    goalInferenceAt = now;
+    goalInferenceInFlight = true;
+    const controller = new AbortController();
+    goalInferenceController = controller;
+    try {
+      const text = await generateGoal(
+        ctx.modelRegistry,
+        model,
+        goalDigest.serialize(),
+        currentGoal || undefined,
+        config.language,
+        controller.signal,
+      );
+      if (controller.signal.aborted || !agentRunning || !text) return;
+      if (text === currentGoal) return;
+      currentGoal = text;
+      updateRecapWidget(ctx);
+    } catch {
+      // Goal inference is best-effort; keep the last objective on failure.
+    } finally {
+      if (goalInferenceController === controller) {
+        goalInferenceController = undefined;
+        goalInferenceInFlight = false;
+      }
+    }
+  }
+
+  function startGoalTimer(ctx: ExtensionContext): void {
+    stopGoalTimer();
+    goalTimer = setInterval(() => {
+      void inferGoal(ctx);
+    }, GOAL_INFERENCE_INTERVAL_MS);
+    goalTimer.unref?.();
+  }
+
   function updateRecapWidget(ctx: ExtensionContext): void {
     try {
       if (ctx.mode !== "tui") return;
@@ -192,15 +270,7 @@ export default function (pi: ExtensionAPI) {
         recapActivityWidget.clear(ctx);
       }
 
-      const sections: Array<{ icon: string; label: string; text: string }> = [];
-      if (currentRecap) {
-        sections.push({ icon: "✦", label: "Recap:", text: currentRecap });
-      }
-      if (agentRunning && currentGoal) {
-        sections.push({ icon: "◐", label: "Goal:", text: currentGoal });
-      }
-
-      if (!config.enabled || sections.length === 0) {
+      if (!config.enabled || buildSections().length === 0) {
         ctx.ui.setWidget("recap", undefined);
         return;
       }
@@ -210,11 +280,12 @@ export default function (pi: ExtensionAPI) {
         (_tui, theme) => {
           return {
             render: (width: number) => {
+              if (!config.enabled) return [];
               const style = createPiThemeStyle(theme);
               const mdTheme = buildMarkdownThemeCallbacks(style) as MarkdownTheme;
               const lines: string[] = [];
 
-              for (const section of sections) {
+              for (const section of buildSections()) {
                 const icon = theme.fg("accent", section.icon);
                 const label = theme.fg("dim", section.label);
                 const firstPrefix = `${icon} ${label} `;
@@ -483,9 +554,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     activeRequest?.controller.abort();
     activeRequest = undefined;
+    stopGoalTimer();
+    cancelGoalInference();
+    goalDigest.reset();
     generatingRecap = false;
     currentRecap = "";
     currentGoal = "";
+    currentThinking = "";
     agentRunning = false;
     completedRequestKey = undefined;
     config = readRecapConfig();
@@ -526,22 +601,61 @@ export default function (pi: ExtensionAPI) {
     shouldRecap = true;
   });
 
-  // Surface the current step's goal while the agent is running, so the widget
-  // pairs the completed previous step with what is being worked on now.
+  // Track the live run: a bounded activity digest, the latest thinking excerpt,
+  // and a throttled inference of the current objective.
   pi.on("before_agent_start", (event, ctx) => {
-    if (event.messageType !== "user") return;
-    currentGoal = goalFromPrompt(event.prompt);
+    if (event.messageType !== "user" || ctx.mode !== "tui") return;
+    cancelGoalInference();
+    stopGoalTimer();
+    goalDigest.begin(event.prompt);
+    currentGoal = "";
+    currentThinking = "";
+    goalInferenceAt = 0;
+    lastThinkingPaint = 0;
     agentRunning = true;
     updateRecapWidget(ctx);
+    startGoalTimer(ctx);
+    void inferGoal(ctx);
+  });
+
+  pi.on("message_update", (event, ctx) => {
+    if (!agentRunning || event.message.role !== "assistant") return;
+    const now = Date.now();
+    if (now - lastThinkingPaint < 500) return;
+    lastThinkingPaint = now;
+    const { thinking, text } = extractAssistantParts(event.message.content);
+    if (thinking) currentThinking = thinkingExcerpt(thinking);
+    if (text) goalDigest.setAssistant(text);
+    updateRecapWidget(ctx);
+  });
+
+  pi.on("message_end", (event, ctx) => {
+    if (!agentRunning || event.message.role !== "assistant") return;
+    const { thinking, text } = extractAssistantParts(event.message.content);
+    if (thinking) currentThinking = thinkingExcerpt(thinking);
+    if (text) goalDigest.setAssistant(text);
+    updateRecapWidget(ctx);
+  });
+
+  pi.on("tool_result", (event, ctx) => {
+    if (!agentRunning) return;
+    goalDigest.recordTool(event.toolName, event.input, ctx.cwd, event.isError);
+    updateRecapWidget(ctx);
+    void inferGoal(ctx);
   });
 
   // Automatically update recap after each turn
   pi.on("agent_settled", async (_event, ctx) => {
-    // The run is over: drop the in-flight goal so only the completed recap
-    // remains. Repaint immediately; the recap refresh below may be skipped
-    // when there is no configured model or no complete exchange to recap.
+    // The run is over: stop live tracking and drop the in-flight goal so only
+    // the completed recap remains. Repaint immediately; the recap refresh
+    // below may be skipped when there is no configured model or no complete
+    // exchange to recap.
+    stopGoalTimer();
+    cancelGoalInference();
     agentRunning = false;
     currentGoal = "";
+    currentThinking = "";
+    goalDigest.reset();
     updateRecapWidget(ctx);
     if (!shouldRecap) return;
     shouldRecap = false;
@@ -653,5 +767,11 @@ export default function (pi: ExtensionAPI) {
         "warning",
       );
     },
+  });
+
+  pi.on("session_shutdown", () => {
+    stopGoalTimer();
+    cancelGoalInference();
+    goalDigest.reset();
   });
 }

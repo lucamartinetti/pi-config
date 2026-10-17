@@ -36,7 +36,7 @@ Loaded automatically from `agent/extensions/`:
 
 | Extension | Purpose |
 |---|---|
-| `pi-recap/` | Fork of `@fradser/pi-recap`: keeps the `✦ Recap:` line describing the previous step and adds a `◐ Goal:` line derived from the current prompt while a run is active |
+| `pi-recap/` | Fork of `@fradser/pi-recap`: keeps the `✦ Recap:` line describing the previous step and, while a run is active, adds an inferred `◐ Goal:`, a `💭 Thinking:` excerpt, and a `↳ Trail:` action sequence (one goal inference at start, then at most one per 30s) |
 | `reload-runtime.ts` | `/reload-runtime` + `reload_runtime` tool |
 
 The vendored recap imports `@fradser/pi-kit` through
