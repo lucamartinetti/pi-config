@@ -1,0 +1,661 @@
+/**
+ * pi-recap-fradser — session recap for Pi.
+ *
+ * Automatically displays a scannable one-line recap of the current session
+ * above the TUI input box (aboveEditor widget), inspired by Claude Code's recap.
+ *
+ * Running `/recap` opens an interactive management TUI for recap controls,
+ * model selection, and language preferences.
+ */
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  Markdown,
+  type MarkdownTheme,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
+import {
+  buildMarkdownThemeCallbacks,
+  createLiveActivityWidget,
+  createPiThemeStyle,
+  enterModelFromInput,
+  getDirectorySessionKey,
+  isSameDirectory,
+  modelRef,
+  notifyPi,
+  parseModelRef,
+  renderPiWidgetRow,
+  searchModelFromPicker,
+  sortModels,
+} from "@fradser/pi-kit";
+import {
+  languageLabel,
+  type RecapConfig,
+  readRecapConfig,
+  recapConfigPath,
+  writeRecapConfig,
+} from "./config";
+import {
+  extractLatestSavedRecap,
+  generateRecap,
+  getLastExchange,
+  type RecapSessionEntry,
+} from "./recap";
+
+let config: RecapConfig = readRecapConfig();
+
+function configuredModelLabel(): string {
+  return modelRef(config) ?? "session default";
+}
+
+/**
+ * Derive the current step's goal directly from the user prompt. This is a
+ * cheap, zero-inference label that complements the generated recap of the
+ * previous step while a run is active.
+ */
+function goalFromPrompt(prompt: string): string {
+  const text = prompt.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 120 ? `${text.slice(0, 119).trimEnd()}\u2026` : text;
+}
+
+function availableModels(ctx: ExtensionContext) {
+  const currentPiModels =
+    typeof ctx.modelRegistry.getAll === "function"
+      ? ctx.modelRegistry.getAll()
+      : ctx.scopedModels && ctx.scopedModels.length > 0
+        ? ctx.scopedModels.map((scoped) => scoped.model)
+        : ctx.modelRegistry.getAvailable();
+
+  return sortModels([...currentPiModels]);
+}
+
+function resolveRecapModel(ctx: ExtensionContext): Model<Api> | undefined {
+  if (config.provider && config.model) {
+    const found = ctx.modelRegistry.find(config.provider, config.model);
+    if (found) return found;
+  }
+  return ctx.model;
+}
+
+function readDirectorySessionRecap(
+  cwd: string,
+  sessionFile: string | undefined,
+): string | undefined {
+  try {
+    if (!cwd || !sessionFile) return undefined;
+    const sessionId = path.basename(sessionFile, ".jsonl");
+    const dirKey = getDirectorySessionKey(cwd);
+    const regDir = path.join(
+      os.homedir(),
+      ".pi",
+      "agent",
+      "directory-sessions",
+      dirKey,
+    );
+    const filePath = path.join(regDir, `${sessionId}.json`);
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw);
+      if (typeof data.cwd !== "string" || !isSameDirectory(data.cwd, cwd)) {
+        return undefined;
+      }
+      if (typeof data.recap === "string" && data.recap.trim()) {
+        return data.recap.trim();
+      }
+    }
+  } catch {
+    // Best-effort directory session read
+  }
+  return undefined;
+}
+
+function syncDirectorySessionRecap(
+  cwd: string,
+  sessionFile: string | undefined,
+  recapText: string,
+): void {
+  try {
+    if (!cwd || !sessionFile) return;
+    const sessionId = path.basename(sessionFile, ".jsonl");
+    const dirKey = getDirectorySessionKey(cwd);
+    const regDir = path.join(
+      os.homedir(),
+      ".pi",
+      "agent",
+      "directory-sessions",
+      dirKey,
+    );
+    const filePath = path.join(regDir, `${sessionId}.json`);
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw);
+      if (typeof data.cwd !== "string" || !isSameDirectory(data.cwd, cwd)) {
+        return;
+      }
+      data.recap = recapText;
+      data.updatedAt = Date.now();
+      const tmpPath = `${filePath}.tmp.${Date.now()}`;
+      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+      fs.renameSync(tmpPath, filePath);
+    }
+  } catch {
+    // Best-effort directory session sync
+  }
+}
+
+export default function (pi: ExtensionAPI) {
+  let currentRecap = "";
+  const recapActivityWidget = createLiveActivityWidget({
+    key: "recap-activity",
+    placement: "aboveEditor",
+    fit: truncateToWidth,
+    leadingSpaces: 1,
+    fallbackActivity: "",
+  });
+  let shouldRecap = false;
+  let currentGoal = "";
+  let agentRunning = false;
+  let generatingRecap = false;
+  let activeRequest:
+    | {
+        key: string;
+        controller: AbortController;
+        promise: Promise<string | undefined>;
+      }
+    | undefined;
+  let completedRequestKey: string | undefined;
+
+  function saveConfig(next: RecapConfig, ctx: ExtensionContext): void {
+    config = next;
+    writeRecapConfig(config);
+    updateRecapWidget(ctx);
+  }
+
+  function updateRecapWidget(ctx: ExtensionContext): void {
+    try {
+      if (ctx.mode !== "tui") return;
+
+      const generating = config.enabled && generatingRecap;
+      if (generating) {
+        recapActivityWidget.update(ctx, [{ id: "recap", identity: "Recapping..." }]);
+      } else {
+        recapActivityWidget.clear(ctx);
+      }
+
+      const sections: Array<{ icon: string; label: string; text: string }> = [];
+      if (currentRecap) {
+        sections.push({ icon: "✦", label: "Recap:", text: currentRecap });
+      }
+      if (agentRunning && currentGoal) {
+        sections.push({ icon: "◐", label: "Goal:", text: currentGoal });
+      }
+
+      if (!config.enabled || sections.length === 0) {
+        ctx.ui.setWidget("recap", undefined);
+        return;
+      }
+
+      ctx.ui.setWidget(
+        "recap",
+        (_tui, theme) => {
+          return {
+            render: (width: number) => {
+              const style = createPiThemeStyle(theme);
+              const mdTheme = buildMarkdownThemeCallbacks(style) as MarkdownTheme;
+              const lines: string[] = [];
+
+              for (const section of sections) {
+                const icon = theme.fg("accent", section.icon);
+                const label = theme.fg("dim", section.label);
+                const firstPrefix = `${icon} ${label} `;
+                const prefixWidth = visibleWidth(firstPrefix);
+                const contentWidth = Math.max(15, width - prefixWidth);
+                const indent = " ".repeat(prefixWidth);
+                const markdown = new Markdown(section.text, 0, 0, mdTheme);
+                const mdLines = markdown.render(contentWidth);
+                for (let i = 0; i < mdLines.length; i++) {
+                  const raw = mdLines[i];
+                  const content = raw === "__OVERLAY_SEPARATOR__"
+                    ? style.dim("─".repeat(Math.max(1, contentWidth)))
+                    : raw;
+                  const prefix = i === 0 ? firstPrefix : indent;
+                  lines.push(renderPiWidgetRow(`${prefix}${content}`, width, truncateToWidth, 1));
+                }
+              }
+
+              return lines;
+            },
+            invalidate: () => {},
+            dispose: () => {},
+          };
+        },
+        { placement: "aboveEditor" },
+      );
+    } catch (error) {
+      if (error instanceof Error && !error.message.includes("stale")) {
+        throw error;
+      }
+    }
+  }
+
+  async function performRecap(
+    ctx: ExtensionContext,
+    force = false,
+    exchangeOverride?: { user: string; assistant: string },
+  ): Promise<string | undefined> {
+    if (ctx.mode !== "tui") return undefined;
+
+    const model = resolveRecapModel(ctx);
+    if (!model) return undefined;
+
+    const exchange =
+      exchangeOverride ?? getLastExchange(ctx.sessionManager.getBranch());
+    if (!exchange) return undefined;
+
+    const key = [
+      exchange.user,
+      exchange.assistant,
+      model.provider,
+      model.id,
+      config.language,
+    ].join("\u0000");
+    if (activeRequest?.key === key) return activeRequest.promise;
+    if (!force && completedRequestKey === key && currentRecap) return currentRecap;
+    activeRequest?.controller.abort();
+
+    const controller = new AbortController();
+    const request: {
+      key: string;
+      controller: AbortController;
+      promise: Promise<string | undefined>;
+    } = { key, controller, promise: Promise.resolve(undefined) };
+    activeRequest = request;
+    generatingRecap = true;
+    updateRecapWidget(ctx);
+
+    request.promise = (async () => {
+      try {
+        const text = await generateRecap(
+          ctx.modelRegistry,
+          model,
+          exchange.user,
+          exchange.assistant,
+          currentRecap || undefined,
+          config.language,
+          controller.signal,
+        );
+
+        if (controller.signal.aborted || activeRequest !== request || !text)
+          return undefined;
+        completedRequestKey = key;
+        if (text === currentRecap) return text;
+
+        currentRecap = text;
+        pi.appendEntry("recap", {
+          recap: text,
+          language: config.language,
+          timestamp: Date.now(),
+        });
+        syncDirectorySessionRecap(
+          ctx.cwd,
+          ctx.sessionManager.getSessionFile(),
+          text,
+        );
+        return text;
+      } finally {
+        if (activeRequest === request) {
+          activeRequest = undefined;
+          generatingRecap = false;
+          updateRecapWidget(ctx);
+        }
+      }
+    })();
+
+    return request.promise;
+  }
+
+  function recapFailureMessage(ctx: ExtensionContext): string {
+    if (!getLastExchange(ctx.sessionManager.getBranch())) {
+      return "No complete user/assistant exchange is available to recap";
+    }
+    return "Recap generation failed; check the configured model and authentication";
+  }
+
+  async function chooseRecapModel(ctx: ExtensionCommandContext): Promise<void> {
+    const result = await searchModelFromPicker(
+      ctx.ui,
+      availableModels(ctx),
+      modelRef(config),
+      { title: "Select a model for recap generation:" },
+    );
+
+    if (!result) {
+      // Dismissing the picker without a model is how the override is cleared.
+      if (!config.provider && !config.model) return;
+      saveConfig({ ...config, provider: undefined, model: undefined }, ctx);
+      notifyPi(ctx.ui, "Recap model reset to session default", "info");
+      return;
+    }
+
+    saveConfig({ ...config, ...result }, ctx);
+    notifyPi(ctx.ui, `Recap model set to ${result.provider}/${result.model}`, "info");
+  }
+
+  async function enterRecapModel(ctx: ExtensionCommandContext): Promise<void> {
+    const result = await enterModelFromInput(
+      ctx.ui,
+      ctx.modelRegistry,
+      modelRef(config),
+      {
+        label: "Recap model (provider/model format):",
+        onEmpty: () => {
+          saveConfig({ ...config, provider: undefined, model: undefined }, ctx);
+          notifyPi(ctx.ui, "Recap model reset to session default", "info");
+        },
+      },
+    );
+    if (!result) return;
+
+    saveConfig({ ...config, ...result }, ctx);
+    notifyPi(ctx.ui, `Recap model set to ${result.provider}/${result.model}`, "info");
+  }
+
+  async function chooseRecapLanguage(
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    const current = languageLabel(config.language);
+    const options = [
+      `Auto (same as conversation)${config.language === "auto" ? " · current" : ""}`,
+      `Chinese (\u4E2D\u6587)${config.language === "zh" ? " · current" : ""}`,
+      `English${config.language === "en" ? " · current" : ""}`,
+      "Custom language...",
+    ];
+
+    const selected = await ctx.ui.select(
+      `Recap language (current: ${current}):`,
+      options,
+    );
+    if (!selected) return;
+
+    if (selected.startsWith("Auto")) {
+      saveConfig({ ...config, language: "auto" }, ctx);
+      notifyPi(ctx.ui,
+        "Recap language set to Auto (same as conversation)",
+        "info",
+      );
+    } else if (selected.startsWith("Chinese")) {
+      saveConfig({ ...config, language: "zh" }, ctx);
+      notifyPi(ctx.ui, "Recap language set to Chinese", "info");
+    } else if (selected.startsWith("English")) {
+      saveConfig({ ...config, language: "en" }, ctx);
+      notifyPi(ctx.ui, "Recap language set to English", "info");
+    } else if (selected.startsWith("Custom")) {
+      const custom = await ctx.ui.input(
+        "Enter target language name (e.g. Japanese, French):",
+        "",
+      );
+      if (custom?.trim()) {
+        saveConfig({ ...config, language: custom.trim() }, ctx);
+        notifyPi(ctx.ui, `Recap language set to ${custom.trim()}`, "info");
+      }
+    }
+  }
+
+  function configSummary(): string {
+    return [
+      `Recap: ${config.enabled ? "on" : "off"}`,
+      `Auto-recap: ${config.autoRecap ? "on" : "off"}`,
+      `Language: ${languageLabel(config.language)}`,
+      `Model: ${configuredModelLabel()}`,
+      `Config file: ${recapConfigPath()}`,
+    ].join("\n");
+  }
+
+  async function openRecapMenu(ctx: ExtensionCommandContext): Promise<void> {
+    if (!ctx.hasUI) {
+      notifyPi(ctx.ui, configSummary(), "info");
+      return;
+    }
+
+    const modelDesc = `Model: ${configuredModelLabel()}`;
+    const langDesc = `Language: ${languageLabel(config.language)}`;
+    const title = `Recap: ${config.enabled ? "on" : "off"} · Auto: ${config.autoRecap ? "on" : "off"} · ${langDesc} · ${modelDesc}\n\nRecap management:`;
+
+    const toggleDisplay = config.enabled
+      ? "Disable recap display"
+      : "Enable recap display";
+    const toggleAuto = config.autoRecap
+      ? "Disable auto-recap"
+      : "Enable auto-recap";
+
+    const options = [
+      "Generate recap now",
+      `Set recap language (current: ${languageLabel(config.language)})`,
+      `Select recap model (current: ${configuredModelLabel()})`,
+      "Enter provider/model manually",
+      toggleDisplay,
+      toggleAuto,
+    ];
+
+    const choice = await ctx.ui.select(title, options);
+    if (!choice) return;
+
+    if (choice.startsWith("Generate recap now")) {
+      notifyPi(ctx.ui, "Generating recap...", "info");
+      const refreshed = await performRecap(ctx, true);
+      if (refreshed) {
+        notifyPi(ctx.ui, `✦ Recap: ${refreshed}`, "info");
+      } else {
+        notifyPi(ctx.ui, recapFailureMessage(ctx), "warning");
+      }
+    } else if (choice.startsWith("Set recap language")) {
+      await chooseRecapLanguage(ctx);
+    } else if (choice.startsWith("Select recap model")) {
+      await chooseRecapModel(ctx);
+    } else if (choice === "Enter provider/model manually") {
+      await enterRecapModel(ctx);
+    } else if (choice === "Enable recap display") {
+      saveConfig({ ...config, enabled: true }, ctx);
+      notifyPi(ctx.ui, "Recap display enabled", "info");
+    } else if (choice === "Disable recap display") {
+      saveConfig({ ...config, enabled: false }, ctx);
+      notifyPi(ctx.ui, "Recap display disabled", "info");
+    } else if (choice === "Enable auto-recap") {
+      saveConfig({ ...config, autoRecap: true }, ctx);
+      notifyPi(ctx.ui, "Auto-recap enabled", "info");
+    } else if (choice === "Disable auto-recap") {
+      saveConfig({ ...config, autoRecap: false }, ctx);
+      notifyPi(ctx.ui, "Auto-recap disabled", "info");
+    }
+  }
+
+  // Restore or compute latest recap on session start
+  pi.on("session_start", async (_event, ctx) => {
+    activeRequest?.controller.abort();
+    activeRequest = undefined;
+    generatingRecap = false;
+    currentRecap = "";
+    currentGoal = "";
+    agentRunning = false;
+    completedRequestKey = undefined;
+    config = readRecapConfig();
+    shouldRecap = false;
+    const branch = (ctx.sessionManager?.getBranch?.() ??
+      []) as RecapSessionEntry[];
+    const savedRecap =
+      extractLatestSavedRecap(branch) ??
+      readDirectorySessionRecap(
+        ctx.cwd,
+        ctx.sessionManager?.getSessionFile?.(),
+      );
+    if (savedRecap) {
+      currentRecap = savedRecap;
+      const exchange = getLastExchange(branch);
+      const model = resolveRecapModel(ctx);
+      if (exchange && model) {
+        completedRequestKey = [
+          exchange.user,
+          exchange.assistant,
+          model.provider,
+          model.id,
+          config.language,
+        ].join("\u0000");
+      }
+    }
+    updateRecapWidget(ctx);
+    if (ctx.mode === "tui" && config.enabled && !savedRecap) {
+      void performRecap(ctx).catch(() => {
+        // Background recap must not create an unhandled rejection during teardown.
+      });
+    }
+  });
+
+  // Track user interactive input to trigger recap on settlement
+  pi.on("input", (event) => {
+    if (event.source !== "interactive") return;
+    shouldRecap = true;
+  });
+
+  // Surface the current step's goal while the agent is running, so the widget
+  // pairs the completed previous step with what is being worked on now.
+  pi.on("before_agent_start", (event, ctx) => {
+    if (event.messageType !== "user") return;
+    currentGoal = goalFromPrompt(event.prompt);
+    agentRunning = true;
+    updateRecapWidget(ctx);
+  });
+
+  // Automatically update recap after each turn
+  pi.on("agent_settled", async (_event, ctx) => {
+    // The run is over: drop the in-flight goal so only the completed recap
+    // remains once the new recap has been generated.
+    agentRunning = false;
+    currentGoal = "";
+    if (!shouldRecap) {
+      updateRecapWidget(ctx);
+      return;
+    }
+    shouldRecap = false;
+    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) {
+      updateRecapWidget(ctx);
+      return;
+    }
+    void performRecap(ctx).catch(() => {
+      // Background recap must not create an unhandled rejection during teardown.
+    });
+  });
+
+  // /recap command — open management menu or execute subcommand
+  pi.registerCommand("recap", {
+    description:
+      "Manage session recap: generate, configure model/language, toggle display",
+    handler: async (args, ctx) => {
+      const raw = args.trim();
+      const lower = raw.toLowerCase();
+
+      if (!raw) {
+        await openRecapMenu(ctx);
+        return;
+      }
+
+      if (lower === "on" || lower === "enable") {
+        saveConfig({ ...config, enabled: true }, ctx);
+        notifyPi(ctx.ui, "Recap display: on", "info");
+        return;
+      }
+
+      if (lower === "off" || lower === "disable") {
+        saveConfig({ ...config, enabled: false }, ctx);
+        notifyPi(ctx.ui, "Recap display: off", "info");
+        return;
+      }
+
+      if (lower === "auto") {
+        saveConfig({ ...config, autoRecap: !config.autoRecap }, ctx);
+        notifyPi(ctx.ui, `Auto-recap: ${config.autoRecap ? "on" : "off"}`, "info");
+        return;
+      }
+
+      if (lower === "now" || lower === "generate") {
+        if (ctx.mode !== "tui") {
+          notifyPi(ctx.ui, "Recap generation requires the TUI", "warning");
+          return;
+        }
+        notifyPi(ctx.ui, "Generating recap...", "info");
+        const refreshed = await performRecap(ctx, true);
+        if (refreshed) {
+          notifyPi(ctx.ui, `✦ Recap: ${refreshed}`, "info");
+        } else {
+          notifyPi(ctx.ui, recapFailureMessage(ctx), "warning");
+        }
+        return;
+      }
+
+      if (lower.startsWith("lang") || lower.startsWith("language")) {
+        const parts = raw.split(/\s+/);
+        const langArg = parts.slice(1).join(" ").trim();
+        if (!langArg) {
+          await chooseRecapLanguage(ctx);
+          return;
+        }
+        saveConfig({ ...config, language: langArg }, ctx);
+        notifyPi(ctx.ui,
+          `Recap language set to ${languageLabel(langArg)}`,
+          "info",
+        );
+        return;
+      }
+
+      if (lower.startsWith("model")) {
+        const modelArg = raw.slice("model".length).trim();
+        if (!modelArg) {
+          await chooseRecapModel(ctx);
+          return;
+        }
+        if (
+          modelArg === "default" ||
+          modelArg === "clear" ||
+          modelArg === "none"
+        ) {
+          saveConfig({ ...config, provider: undefined, model: undefined }, ctx);
+          notifyPi(ctx.ui, "Recap model reset to session default", "info");
+          return;
+        }
+        const ref = parseModelRef(modelArg);
+        if (!ref) {
+          notifyPi(ctx.ui,
+            "Enter a model in provider/model format (e.g. anthropic/claude-3-5-haiku)",
+            "error",
+          );
+          return;
+        }
+        const model = ctx.modelRegistry.find(ref.provider, ref.model);
+        if (!model) {
+          notifyPi(ctx.ui,
+            `Model ${ref.provider}/${ref.model} was not found in the model registry`,
+            "error",
+          );
+          return;
+        }
+        saveConfig({ ...config, ...ref }, ctx);
+        notifyPi(ctx.ui, `Recap model set to ${ref.provider}/${ref.model}`, "info");
+        return;
+      }
+
+      notifyPi(ctx.ui,
+        `Unknown subcommand "${raw}". Run /recap to open the management menu.`,
+        "warning",
+      );
+    },
+  });
+}

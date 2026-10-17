@@ -1,0 +1,70 @@
+# @fradser/pi-recap
+
+> Local fork. Keeps the previous `✦ Recap:` visible during regeneration and adds
+> a `◐ Goal:` line derived from the current prompt while a run is active. See
+> `~/.pi/README.md` for how it is wired up.
+
+Session recap for Pi — displays a concise, scannable summary of the current session above the TUI input box, inspired by Claude Code's `✦ Recap:` feature.
+
+## Structure
+
+```
+text
+recap/
+├── index.ts              — Package-root extension entry point
+├── extensions/
+│   ├── config.ts         — Configuration read/write + environment variable overrides
+│   ├── index.ts          — Pi lifecycle hooks, /recap command, widget setup
+│   └── recap.ts          — Generation logic, session-entry persistence
+├── features/             — BDD contract
+├── tests/                — Package E2E tests
+└── README.md
+```
+
+## Install
+
+```bash
+pi install npm:@fradser/pi-recap
+```
+
+## Features
+
+- **TUI Above-Editor Display**: Once installed, the extension automatically displays the most recent recap in the widget above the editor (`✦ Recap: <summary>`). When the first user prompt arrives, that line is replaced by an animated `Recapping...` marker while the initial progress summary is prepared, then returns with the completed turn's outcome instead of stacking a second line.
+- **Management Menu (`/recap`)**: Running `/recap` opens an interactive management TUI (similar to `@packages/memory/` and `@packages/vision/`) allowing you to generate recaps on demand, choose dedicated models, or toggle display settings.
+- **Model Selection**: Supports selecting any model available in Pi's model registry (e.g. `anthropic/claude-3-5-haiku`, `openai/gpt-4o-mini`, or session default). Dismissing the picker without choosing a model clears the override, so recap generation falls back to the session default.
+- **Non-blocking & In-process**: Recaps are generated asynchronously using Pi's model registry. The first user prompt starts an immediate in-progress recap so the widget can tell you that work is being recapped; after the turn completes, it refreshes with the outcome. Later turns are recapped after settlement without spawning external child processes. Requests are deduplicated, superseded requests are cancelled across authentication and provider responses, and generation has a 30-second timeout. The completion budget accommodates reasoning models before they emit recap text. Empty or generic verb-plus-identifier outputs are rejected and retried once; an uninformative retry is discarded. Before the assistant reports an outcome, the prompt treats plans and requested work as starting or planned and forbids claiming unverified actions, files, connections, or results.
+- **Context Continuity & Persistence**: Progressively evolves the recap by combining the previous recap with the latest complete assistant answer and its preceding user request. Interrupted, failed, and incomplete answers are excluded; a newer complete answer for the same request replaces an older one. Recaps are persisted directly into the session branch via custom session entries (`pi.appendEntry`), restoring immediately on restarts without redundant LLM calls. Output is limited to one line and 120 characters; unchanged recaps are not persisted again.
+- **Cross-Session Sync**: Automatically updates the directory session registry (`~/.pi/agent/directory-sessions/`) using pi-kit's canonical hashed directory identity. Registry reads and updates verify the stored `cwd` before using a record; older directory names are not migrated.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `/recap` | Open interactive recap management menu |
+| `/recap now` | Generate and refresh recap immediately |
+| `/recap on` | Enable recap display widget |
+| `/recap off` | Disable recap display widget |
+| `/recap auto` | Toggle automatic generation after turns |
+| `/recap model [provider/model]` | Set model override or open model picker |
+
+## Configuration
+
+Persisted in `~/.pi/agent/recap.json`:
+
+```json
+{
+  "provider": "anthropic",
+  "model": "claude-3-5-haiku",
+  "enabled": true,
+  "autoRecap": true
+}
+```
+
+Environment variable overrides (take precedence over saved configuration):
+- `PI_RECAP_MODEL` — e.g. `anthropic/claude-3-5-haiku`
+- `PI_RECAP_PROVIDER` — fallback provider name
+- `PI_RECAP_LANGUAGE` — e.g. `en`, `zh`, or `Japanese`
+
+## License
+
+MIT

@@ -9,12 +9,13 @@ model config, custom subagents, and installed extensions.
 agent/
   settings.json        # provider/model, theme, enabled models, installed packages
   models.json          # custom model definitions
-  recap.json           # @fradser/pi-recap config (✦ Recap line)
+  recap.json           # vendored pi-recap config (✦ Recap / ◐ Goal lines)
   supi/config.json     # @mrclrchtr/supi-prompt-suggestions config (ghost text)
   agents/              # custom subagents (planner, reviewer, scout, worker)
   prompts/             # prompt templates (empty)
   extensions/          # local extensions
     reload-runtime.ts  # /reload-runtime + reload_runtime tool
+    pi-recap/          # vendored @fradser/pi-recap + pi-kit symlink
   npm/                 # extension dependency manifest + lockfile
 ```
 
@@ -26,9 +27,23 @@ Declared in `agent/settings.json` (`packages`) and pinned in
 | Package | Purpose |
 |---|---|
 | `@tintinweb/pi-subagents` | Delegate tasks to subagents |
-| `@fradser/pi-recap` | `✦ Recap:` summary line after each turn |
 | `@mrclrchtr/supi-prompt-suggestions` | Ghost-text next-prompt suggestions |
 | `@mrclrchtr/supi-settings` | `/supi-settings` UI (required by the above) |
+
+### Vendored extensions
+
+Loaded automatically from `agent/extensions/`:
+
+| Extension | Purpose |
+|---|---|
+| `pi-recap/` | Fork of `@fradser/pi-recap`: keeps the `✦ Recap:` line describing the previous step and adds a `◐ Goal:` line derived from the current prompt while a run is active |
+| `reload-runtime.ts` | `/reload-runtime` + `reload_runtime` tool |
+
+The vendored recap imports `@fradser/pi-kit` through
+`agent/extensions/pi-recap/node_modules/@fradser/pi-kit`, a symlink to
+`agent/npm/node_modules/@fradser/pi-kit`. `@fradser/pi-kit` is a direct
+dependency in `agent/npm/package.json`, so `pi update --extensions` keeps it
+installed.
 
 ### Model notes
 
@@ -46,8 +61,11 @@ model available for cycling.
 ```bash
 git clone git@github.com:lucamartinetti/pi-config.git ~/.pi
 cd ~/.pi
-pi update --extensions   # installs the packages declared in settings.json
+pi update --extensions   # installs the packages declared in settings.json (incl. @fradser/pi-kit)
 ```
+
+Local extensions under `agent/extensions/` load without an install step; the
+vendored `pi-recap` only needs `@fradser/pi-kit` present via its symlink.
 
 Authentication (`agent/auth.json`) is intentionally not tracked — sign in again
 with `pi auth` / provider env vars.
