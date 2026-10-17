@@ -11,8 +11,7 @@
     "npm:@tintinweb/pi-subagents",
     "npm:@fradser/pi-recap",
     "npm:@mrclrchtr/supi-prompt-suggestions",
-    "npm:@mrclrchtr/supi-settings",
-    "npm:@brettinternet/pi-progress"
+    "npm:@mrclrchtr/supi-settings"
   ],
   "hideThinkingBlock": true
 }
