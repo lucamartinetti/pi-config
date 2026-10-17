@@ -538,18 +538,14 @@ export default function (pi: ExtensionAPI) {
   // Automatically update recap after each turn
   pi.on("agent_settled", async (_event, ctx) => {
     // The run is over: drop the in-flight goal so only the completed recap
-    // remains once the new recap has been generated.
+    // remains. Repaint immediately; the recap refresh below may be skipped
+    // when there is no configured model or no complete exchange to recap.
     agentRunning = false;
     currentGoal = "";
-    if (!shouldRecap) {
-      updateRecapWidget(ctx);
-      return;
-    }
+    updateRecapWidget(ctx);
+    if (!shouldRecap) return;
     shouldRecap = false;
-    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) {
-      updateRecapWidget(ctx);
-      return;
-    }
+    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) return;
     void performRecap(ctx).catch(() => {
       // Background recap must not create an unhandled rejection during teardown.
     });
