@@ -13,5 +13,6 @@
     "npm:@mrclrchtr/supi-prompt-suggestions",
     "npm:@mrclrchtr/supi-settings",
     "npm:@brettinternet/pi-progress"
-  ]
+  ],
+  "hideThinkingBlock": true
 }
