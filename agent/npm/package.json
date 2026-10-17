@@ -2,6 +2,7 @@
   "name": "pi-extensions",
   "private": true,
   "dependencies": {
+    "@brettinternet/pi-progress": "^0.1.6",
     "@fradser/pi-recap": "^0.1.11",
     "@mrclrchtr/supi-prompt-suggestions": "^9.1.1",
     "@mrclrchtr/supi-settings": "^9.1.1",

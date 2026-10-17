@@ -11,6 +11,7 @@ agent/
   models.json          # custom model definitions
   recap.json           # @fradser/pi-recap config (✦ Recap line)
   supi/config.json     # @mrclrchtr/supi-prompt-suggestions config (ghost text)
+  pi-progress.jsonc    # @brettinternet/pi-progress config (live activity + inference)
   agents/              # custom subagents (planner, reviewer, scout, worker)
   prompts/             # prompt templates (empty)
   extensions/          # local extensions (empty)
@@ -28,10 +29,11 @@ Declared in `agent/settings.json` (`packages`) and pinned in
 | `@fradser/pi-recap` | `✦ Recap:` summary line after each turn |
 | `@mrclrchtr/supi-prompt-suggestions` | Ghost-text next-prompt suggestions |
 | `@mrclrchtr/supi-settings` | `/supi-settings` UI (required by the above) |
+| `@brettinternet/pi-progress` | Live activity/step progress below the editor |
 
 ### Model notes
 
-Both recap and prompt suggestions use the main model
+Recap, prompt suggestions, and pi-progress inference use the main model
 (`openrouter/deepseek/deepseek-v4.1-flash:nitro`).
 
 `settings.json` sets `enabledModels` explicitly. This is required: the
