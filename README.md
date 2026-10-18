@@ -16,6 +16,7 @@ agent/
   extensions/          # local extensions
     reload-runtime.ts  # /reload-runtime + reload_runtime tool
     pi-recap/          # vendored @fradser/pi-recap + pi-kit symlink
+    pi-subagents/      # vendored @tintinweb/pi-subagents + croner/nanoid symlinks
   npm/                 # extension dependency manifest + lockfile
 ```
 
@@ -26,7 +27,6 @@ Declared in `agent/settings.json` (`packages`) and pinned in
 
 | Package | Purpose |
 |---|---|
-| `@tintinweb/pi-subagents` | Delegate tasks to subagents |
 | `@mrclrchtr/supi-prompt-suggestions` | Ghost-text next-prompt suggestions |
 | `@mrclrchtr/supi-settings` | `/supi-settings` UI (required by the above) |
 
@@ -37,6 +37,7 @@ Loaded automatically from `agent/extensions/`:
 | Extension | Purpose |
 |---|---|
 | `pi-recap/` | Fork of `@fradser/pi-recap`: shows the `✦ Recap:` of the previous step when idle and swaps to an inferred `◐ Goal:`, a `💭 Thinking:` excerpt, and a `↳ Trail:` action sequence while a run is active (one goal inference at start, then at most one per 30s) |
+| `pi-subagents/` | Fork of `@tintinweb/pi-subagents` (v0.22.0). Adds scheduled-job cancellation: a `manage_schedule` tool (`list`/`cancel`/`pause`/`resume`), a self-cancel marker (`[schedule-complete]`) injected into recurring fires, `maxRuns`/`cancelOn` auto-cancel, one-shots removed once settled, and `subagents:rpc:schedules:list`/`cancel` RPCs. See its `CHANGELOG.md` (Unreleased). |
 | `reload-runtime.ts` | `/reload-runtime` + `reload_runtime` tool |
 
 The vendored recap imports `@fradser/pi-kit` through
@@ -44,6 +45,14 @@ The vendored recap imports `@fradser/pi-kit` through
 `agent/npm/node_modules/@fradser/pi-kit`. `@fradser/pi-kit` is a direct
 dependency in `agent/npm/package.json`, so `pi update --extensions` keeps it
 installed.
+
+The vendored `pi-subagents` imports `croner` and `nanoid` through
+`agent/extensions/pi-subagents/node_modules/{croner,nanoid}`, symlinks to
+`agent/npm/node_modules/`. Both are direct dependencies in
+`agent/npm/package.json` (previously transitive via `@tintinweb/pi-subagents`),
+so `pi update --extensions` keeps them installed. The host-provided
+`@earendil-works/pi-*` and `typebox` packages are declared as peer dependencies
+and resolved by pi, per the pi package contract — do not vendor them.
 
 ### Model notes
 
@@ -65,7 +74,8 @@ pi update --extensions   # installs the packages declared in settings.json (incl
 ```
 
 Local extensions under `agent/extensions/` load without an install step; the
-vendored `pi-recap` only needs `@fradser/pi-kit` present via its symlink.
+vendored `pi-recap` and `pi-subagents` only need their non-host dependencies
+present via the symlinks described above.
 
 Authentication (`agent/auth.json`) is intentionally not tracked — sign in again
 with `pi auth` / provider env vars.

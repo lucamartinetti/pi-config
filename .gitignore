@@ -13,3 +13,4 @@ agent/sessions/
 
 # Runtime state
 agent/pi-subagents/
+subagent-schedules/
