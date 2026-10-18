@@ -1,0 +1,29 @@
+{
+  "allow": [
+    "^ls\\b"
+  ],
+  "deny": [],
+  "denyPaths": [
+    "~/.ssh/",
+    "~/.profile",
+    "~/.gnupg",
+    "~/.mc",
+    "~/.zshrc",
+    "~/.bashrc"
+  ],
+  "ignoreTools": [
+    "todo",
+    "ask_user_question",
+    "memory_write",
+    "memory_search"
+  ],
+  "builtinDenyFloor": true,
+  "classifierModel": "openrouter/deepseek/deepseek-v4.1-flash:nitro",
+  "toggleShortcut": "ctrl+shift+a",
+  "audit": false,
+  "auditRedactSecrets": true,
+  "notifyAllows": false,
+  "classifierMinConfidence": null,
+  "classifierFallbackModel": null,
+  "classifierFallbackMode": "enforce"
+}
