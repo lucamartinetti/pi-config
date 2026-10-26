@@ -7,6 +7,7 @@
     "@mrclrchtr/supi-settings": "^11.0.1",
     "croner": "^10.0.1",
     "nanoid": "^5.1.16",
-    "pi-verdict": "^0.15.0"
+    "pi-verdict": "^0.15.0",
+    "pi-web-access": "^0.45.0"
   }
 }

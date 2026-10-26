@@ -10,7 +10,8 @@
   "packages": [
     "npm:@mrclrchtr/supi-prompt-suggestions",
     "npm:@mrclrchtr/supi-settings",
-    "npm:pi-verdict"
+    "npm:pi-verdict",
+    "npm:pi-web-access"
   ],
   "hideThinkingBlock": false
 }
