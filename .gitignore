@@ -13,4 +13,5 @@ agent/sessions/
 
 # Runtime state
 agent/pi-subagents/
+agent/mcp.json
 subagent-schedules/
