@@ -52,6 +52,7 @@ import {
 } from "./recap";
 import {
   extractAssistantParts,
+  generateActivity,
   generateGoal,
   GOAL_INFERENCE_INTERVAL_MS,
   RunDigest,
@@ -161,6 +162,7 @@ export default function (pi: ExtensionAPI) {
   const goalDigest = new RunDigest();
   let shouldRecap = false;
   let currentGoal = "";
+  let currentActivity = "";
   let currentThinking = "";
   let agentRunning = false;
   let generatingRecap = false;
@@ -193,12 +195,11 @@ export default function (pi: ExtensionAPI) {
       if (currentGoal) {
         sections.push({ icon: "◐", label: "Goal:", text: currentGoal });
       }
+      if (currentActivity) {
+        sections.push({ icon: "↳", label: "Activity:", text: currentActivity });
+      }
       if (currentThinking) {
         sections.push({ icon: "💭", label: "Thinking:", text: currentThinking });
-      }
-      const trail = goalDigest.trail();
-      if (trail) {
-        sections.push({ icon: "↳", label: "Trail:", text: trail });
       }
     }
     return sections;
@@ -229,18 +230,36 @@ export default function (pi: ExtensionAPI) {
     const controller = new AbortController();
     goalInferenceController = controller;
     try {
-      const text = await generateGoal(
-        ctx.modelRegistry,
-        model,
-        goalDigest.serialize(),
-        currentGoal || undefined,
-        config.language,
-        controller.signal,
-      );
-      if (controller.signal.aborted || !agentRunning || !text) return;
-      if (text === currentGoal) return;
-      currentGoal = text;
-      updateRecapWidget(ctx);
+      const digest = goalDigest.serialize();
+      const [goalText, activityText] = await Promise.all([
+        generateGoal(
+          ctx.modelRegistry,
+          model,
+          digest,
+          currentGoal || undefined,
+          config.language,
+          controller.signal,
+        ),
+        generateActivity(
+          ctx.modelRegistry,
+          model,
+          digest,
+          currentActivity || undefined,
+          config.language,
+          controller.signal,
+        ),
+      ]);
+      if (controller.signal.aborted || !agentRunning) return;
+      let changed = false;
+      if (goalText && goalText !== currentGoal) {
+        currentGoal = goalText;
+        changed = true;
+      }
+      if (activityText && activityText !== currentActivity) {
+        currentActivity = activityText;
+        changed = true;
+      }
+      if (changed) updateRecapWidget(ctx);
     } catch {
       // Goal inference is best-effort; keep the last objective on failure.
     } finally {
@@ -560,6 +579,7 @@ export default function (pi: ExtensionAPI) {
     generatingRecap = false;
     currentRecap = "";
     currentGoal = "";
+    currentActivity = "";
     currentThinking = "";
     agentRunning = false;
     completedRequestKey = undefined;
@@ -609,6 +629,7 @@ export default function (pi: ExtensionAPI) {
     stopGoalTimer();
     goalDigest.begin(event.prompt);
     currentGoal = "";
+    currentActivity = "";
     currentThinking = "";
     goalInferenceAt = 0;
     lastThinkingPaint = 0;
@@ -654,6 +675,7 @@ export default function (pi: ExtensionAPI) {
     cancelGoalInference();
     agentRunning = false;
     currentGoal = "";
+    currentActivity = "";
     currentThinking = "";
     goalDigest.reset();
     updateRecapWidget(ctx);

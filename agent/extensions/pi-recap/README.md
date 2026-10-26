@@ -1,9 +1,9 @@
 # @fradser/pi-recap
 
 > Local fork. While a run is active it hides the previous `✦ Recap:` and shows an
-> inferred `◐ Goal:` (one model call at start, then at most one per 30s) plus free
-> `💭 Thinking:` and `↳ Trail:` lines; when the run settles those clear and the
-> `✦ Recap:` returns. See `~/.pi/README.md` for how it is wired up.
+> inferred `◐ Goal:` and `↳ Activity:` (two model calls at start, then at most one
+> pair per 30s) plus a `💭 Thinking:` excerpt; when the run settles those clear
+> and the `✦ Recap:` returns. See `~/.pi/README.md` for how it is wired up.
 
 Session recap for Pi — displays a concise, scannable summary of the current session above the TUI input box, inspired by Claude Code's `✦ Recap:` feature.
 
@@ -34,7 +34,7 @@ pi install npm:@fradser/pi-recap
 - **Management Menu (`/recap`)**: Running `/recap` opens an interactive management TUI (similar to `@packages/memory/` and `@packages/vision/`) allowing you to generate recaps on demand, choose dedicated models, or toggle display settings.
 - **Model Selection**: Supports selecting any model available in Pi's model registry (e.g. `anthropic/claude-3-5-haiku`, `openai/gpt-4o-mini`, or session default). Dismissing the picker without choosing a model clears the override, so recap generation falls back to the session default.
 - **Non-blocking & In-process**: Recaps are generated asynchronously using Pi's model registry. The first user prompt starts an immediate in-progress recap so the widget can tell you that work is being recapped; after the turn completes, it refreshes with the outcome. Later turns are recapped after settlement without spawning external child processes. Requests are deduplicated, superseded requests are cancelled across authentication and provider responses, and generation has a 30-second timeout. The completion budget accommodates reasoning models before they emit recap text. Empty or generic verb-plus-identifier outputs are rejected and retried once; an uninformative retry is discarded. Before the assistant reports an outcome, the prompt treats plans and requested work as starting or planned and forbids claiming unverified actions, files, connections, or results.
-- **Context Continuity & Persistence**: Progressively evolves the recap by combining the previous recap with the latest complete assistant answer and its preceding user request. Interrupted, failed, and incomplete answers are excluded; a newer complete answer for the same request replaces an older one. Recaps are persisted directly into the session branch via custom session entries (`pi.appendEntry`), restoring immediately on restarts without redundant LLM calls. Output is limited to one line and 120 characters; unchanged recaps are not persisted again.
+- **Context Continuity & Persistence**: Progressively evolves the recap by combining the previous recap with the latest complete assistant answer and its preceding user request. Interrupted, failed, and incomplete answers are excluded; a newer complete answer for the same request replaces an older one. Recaps are persisted directly into the session branch via custom session entries (`pi.appendEntry`), restoring immediately on restarts without redundant LLM calls. Output is limited to one line and 200 characters; unchanged recaps are not persisted again.
 - **Cross-Session Sync**: Automatically updates the directory session registry (`~/.pi/agent/directory-sessions/`) using pi-kit's canonical hashed directory identity. Registry reads and updates verify the stored `cwd` before using a record; older directory names are not migrated.
 
 ## Commands

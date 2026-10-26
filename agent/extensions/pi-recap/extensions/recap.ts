@@ -14,6 +14,8 @@ import { extractTextContent } from "@fradser/pi-kit";
 
 /** Minimal structural view of a session message entry. */
 export const RECAP_TIMEOUT_MS = 30_000;
+/** Longest recap requested from the model and shown in the widget. */
+export const RECAP_MAX_CHARS = 200;
 
 export interface RecapSessionEntry {
   type: string;
@@ -132,7 +134,7 @@ export function buildRecapPrompt(
   const hasAssistantOutcome = assistant.trim().length > 0;
   const lines = [
     "You are an informative session recap generator.",
-    "Summarise the latest session progress in one single-line recap of at most 120 characters.",
+    `Summarise the latest session progress in one single-line recap of at most ${RECAP_MAX_CHARS} characters.`,
     "Include only the action, target, and result or current progress.",
     "Rules:",
     "- Maintain continuous context: update and advance the previous recap with the latest work done.",
@@ -173,7 +175,7 @@ export function buildRecapPrompt(
 /**
  * Clean and normalise the raw model output into a single scannable line.
  */
-export function cleanRecapText(raw: string): string {
+export function cleanRecapText(raw: string, maxChars = RECAP_MAX_CHARS): string {
   if (!raw) return "";
   let text = raw.trim();
   // Strip code blocks or backticks
@@ -201,8 +203,8 @@ export function cleanRecapText(raw: string): string {
   text = text.replace(/\s+/g, " ").trim();
   // Strip trailing period if present
   text = text.replace(/[.\u3002]+$/, "");
-  // Keep the display contract aligned with the prompt's hard limit.
-  return text.slice(0, 120).trim();
+  // Keep the display contract aligned with the caller's hard limit.
+  return text.slice(0, maxChars).trim();
 }
 
 /** Reject empty labels and generic verb-plus-identifier output with no useful context. */

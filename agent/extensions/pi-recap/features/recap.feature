@@ -39,7 +39,7 @@ Feature: Session Recap
     Then the previous step's "✦ Recap:" line is hidden
     And the widget shows a "◐ Goal:" line inferred from the run's activity
     And it shows a "💭 Thinking:" excerpt of the latest assistant reasoning
-    And it shows a "↳ Trail:" sequence of recent tool actions
+    And it shows a "↳ Activity:" model explanation of what the recent actions are doing
     When the run settles
     Then the running lines are cleared and the "✦ Recap:" line is shown again
 
