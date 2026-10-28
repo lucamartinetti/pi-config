@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Upstream pins for the vendored pi packages. A PR here only bumps
+  # package.json + lockfile; .github/workflows/dependabot-sync.yml then
+  # re-vendors the tree and rebases the patches onto the new version.
+  - package-ecosystem: npm
+    directory: /agent/vendor
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      vendor:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: vendor
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
