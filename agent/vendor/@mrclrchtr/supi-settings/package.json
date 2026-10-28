@@ -1,0 +1,62 @@
+{
+  "name": "@mrclrchtr/supi-settings",
+  "version": "11.1.0",
+  "description": "One project/global settings UI for SuPi packages",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrclrchtr/supi.git",
+    "directory": "packages/supi-settings"
+  },
+  "homepage": "https://github.com/mrclrchtr/supi/tree/main/packages/supi-settings#readme",
+  "bugs": {
+    "url": "https://github.com/mrclrchtr/supi/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "settings",
+    "configuration",
+    "tui"
+  ],
+  "type": "module",
+  "files": [
+    "src/**/*.ts",
+    "!__tests__"
+  ],
+  "dependencies": {
+    "@mrclrchtr/supi-core": "11.1.0"
+  },
+  "bundledDependencies": [
+    "@mrclrchtr/supi-core"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/mrclrchtr/supi/main/packages/supi-settings/assets/social-preview.png"
+  },
+  "main": "src/api.ts",
+  "exports": {
+    "./api": "./src/api.ts",
+    "./extension": "./src/extension.ts",
+    "./package.json": "./package.json"
+  }
+}

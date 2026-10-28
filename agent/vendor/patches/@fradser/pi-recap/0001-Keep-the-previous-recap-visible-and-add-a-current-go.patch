@@ -1,0 +1,266 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Luca Martinetti <luca@luca.io>
+Date: Wed, 28 Oct 2026 08:51:11 +0000
+Subject: [PATCH 1/5] Keep the previous recap visible and add a current-goal
+ line
+
+Upstream hides the recap while regenerating and only ever shows one line,
+so while a run is active there is no sign of what the agent is doing.
+Keep the previous step's Recap visible, and add a Goal line derived from
+the current prompt until the run settles.
+---
+ README.md              |   4 ++
+ extensions/index.ts    | 110 ++++++++++++++++++++---------------------
+ features/recap.feature |  29 +++++------
+ 3 files changed, 69 insertions(+), 74 deletions(-)
+
+diff --git a/README.md b/README.md
+index 19282feb5ad39b9c5c45e4174609f3b23a3d9a3b..531852c315f0e9cb51bb5f4f362fb708d1c39103 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,9 @@
+ # @fradser/pi-recap
+ 
++> Local fork. Keeps the previous `✦ Recap:` visible during regeneration and adds
++> a `◐ Goal:` line derived from the current prompt while a run is active. See
++> `~/.pi/README.md` for how it is wired up.
++
+ Session recap for Pi — displays a concise, scannable summary of the current session above the TUI input box, inspired by Claude Code's `✦ Recap:` feature.
+ 
+ ## Structure
+diff --git a/extensions/index.ts b/extensions/index.ts
+index 62930c8803218c115d6843e7e2cd2c932ef71e06..d91acf5cd4da2ea3cb709b4999acfa89e9f3bd59 100644
+--- a/extensions/index.ts
++++ b/extensions/index.ts
+@@ -22,7 +22,6 @@ import {
+   type MarkdownTheme,
+   truncateToWidth,
+   visibleWidth,
+-  wrapTextWithAnsi,
+ } from "@earendil-works/pi-tui";
+ import {
+   buildMarkdownThemeCallbacks,
+@@ -58,6 +57,17 @@ function configuredModelLabel(): string {
+   return modelRef(config) ?? "session default";
+ }
+ 
++/**
++ * Derive the current step's goal directly from the user prompt. This is a
++ * cheap, zero-inference label that complements the generated recap of the
++ * previous step while a run is active.
++ */
++function goalFromPrompt(prompt: string): string {
++  const text = prompt.replace(/\s+/g, " ").trim();
++  if (!text) return "";
++  return text.length > 120 ? `${text.slice(0, 119).trimEnd()}\u2026` : text;
++}
++
+ function availableModels(ctx: ExtensionContext) {
+   const currentPiModels =
+     typeof ctx.modelRegistry.getAll === "function"
+@@ -153,9 +163,8 @@ export default function (pi: ExtensionAPI) {
+     fallbackActivity: "",
+   });
+   let shouldRecap = false;
+-  let initialPromptRecapStarted = false;
+-  let firstPromptRecap: Promise<string | undefined> | undefined;
+-  let sessionGeneration = 0;
++  let currentGoal = "";
++  let agentRunning = false;
+   let generatingRecap = false;
+   let activeRequest:
+     | {
+@@ -183,7 +192,15 @@ export default function (pi: ExtensionAPI) {
+         recapActivityWidget.clear(ctx);
+       }
+ 
+-      if (!config.enabled || !currentRecap || generating) {
++      const sections: Array<{ icon: string; label: string; text: string }> = [];
++      if (currentRecap) {
++        sections.push({ icon: "✦", label: "Recap:", text: currentRecap });
++      }
++      if (agentRunning && currentGoal) {
++        sections.push({ icon: "◐", label: "Goal:", text: currentGoal });
++      }
++
++      if (!config.enabled || sections.length === 0) {
+         ctx.ui.setWidget("recap", undefined);
+         return;
+       }
+@@ -193,20 +210,18 @@ export default function (pi: ExtensionAPI) {
+         (_tui, theme) => {
+           return {
+             render: (width: number) => {
+-              if (!config.enabled || !currentRecap) return [];
+-              const icon = theme.fg("accent", "✦");
+-              const label = theme.fg("dim", "Recap:");
+-              const firstPrefix = `${icon} ${label} `;
+-              const prefixWidth = visibleWidth(firstPrefix);
+-              const contentWidth = Math.max(15, width - prefixWidth);
+-              const indent = " ".repeat(prefixWidth);
++              const style = createPiThemeStyle(theme);
++              const mdTheme = buildMarkdownThemeCallbacks(style) as MarkdownTheme;
+               const lines: string[] = [];
+ 
+-              if (currentRecap) {
+-                const style = createPiThemeStyle(theme);
+-                const mdTheme = buildMarkdownThemeCallbacks(style) as MarkdownTheme;
+-                const markdown = new Markdown(currentRecap, 0, 0, mdTheme);
+-                void wrapTextWithAnsi(currentRecap, contentWidth);
++              for (const section of sections) {
++                const icon = theme.fg("accent", section.icon);
++                const label = theme.fg("dim", section.label);
++                const firstPrefix = `${icon} ${label} `;
++                const prefixWidth = visibleWidth(firstPrefix);
++                const contentWidth = Math.max(15, width - prefixWidth);
++                const indent = " ".repeat(prefixWidth);
++                const markdown = new Markdown(section.text, 0, 0, mdTheme);
+                 const mdLines = markdown.render(contentWidth);
+                 for (let i = 0; i < mdLines.length; i++) {
+                   const raw = mdLines[i];
+@@ -466,15 +481,15 @@ export default function (pi: ExtensionAPI) {
+ 
+   // Restore or compute latest recap on session start
+   pi.on("session_start", async (_event, ctx) => {
+-    sessionGeneration += 1;
+     activeRequest?.controller.abort();
+     activeRequest = undefined;
+     generatingRecap = false;
+     currentRecap = "";
++    currentGoal = "";
++    agentRunning = false;
+     completedRequestKey = undefined;
+     config = readRecapConfig();
+     shouldRecap = false;
+-    initialPromptRecapStarted = false;
+     const branch = (ctx.sessionManager?.getBranch?.() ??
+       []) as RecapSessionEntry[];
+     const savedRecap =
+@@ -497,14 +512,6 @@ export default function (pi: ExtensionAPI) {
+         ].join("\u0000");
+       }
+     }
+-    initialPromptRecapStarted = Boolean(
+-      savedRecap ||
+-        branch.some(
+-          (entry) =>
+-            entry.type === "message" && entry.message?.role === "user",
+-        ),
+-    );
+-    firstPromptRecap = undefined;
+     updateRecapWidget(ctx);
+     if (ctx.mode === "tui" && config.enabled && !savedRecap) {
+       void performRecap(ctx).catch(() => {
+@@ -514,42 +521,33 @@ export default function (pi: ExtensionAPI) {
+   });
+ 
+   // Track user interactive input to trigger recap on settlement
+-  pi.on("input", (event, ctx) => {
++  pi.on("input", (event) => {
+     if (event.source !== "interactive") return;
+-
+     shouldRecap = true;
+-    const prompt = event.text?.trim();
+-    if (!initialPromptRecapStarted && prompt) {
+-      initialPromptRecapStarted = true;
+-      if (ctx && ctx.mode === "tui" && config.enabled && config.autoRecap) {
+-        firstPromptRecap = performRecap(ctx, false, {
+-          user: prompt,
+-          assistant: "",
+-        });
+-        void firstPromptRecap.catch(() => {
+-          // Background recap must not create an unhandled rejection during teardown.
+-        });
+-      }
+-    }
++  });
++
++  // Surface the current step's goal while the agent is running, so the widget
++  // pairs the completed previous step with what is being worked on now.
++  pi.on("before_agent_start", (event, ctx) => {
++    if (event.messageType !== "user") return;
++    currentGoal = goalFromPrompt(event.prompt);
++    agentRunning = true;
++    updateRecapWidget(ctx);
+   });
+ 
+   // Automatically update recap after each turn
+   pi.on("agent_settled", async (_event, ctx) => {
+-    if (!shouldRecap) return;
++    // The run is over: drop the in-flight goal so only the completed recap
++    // remains once the new recap has been generated.
++    agentRunning = false;
++    currentGoal = "";
++    if (!shouldRecap) {
++      updateRecapWidget(ctx);
++      return;
++    }
+     shouldRecap = false;
+-    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) return;
+-    if (firstPromptRecap) {
+-      const initialRecap = firstPromptRecap;
+-      const generation = sessionGeneration;
+-      firstPromptRecap = undefined;
+-      void initialRecap
+-        .then(() => {
+-          if (generation !== sessionGeneration) return undefined;
+-          return performRecap(ctx);
+-        })
+-        .catch(() => {
+-          // Background recap must not create an unhandled rejection during teardown.
+-        });
++    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) {
++      updateRecapWidget(ctx);
+       return;
+     }
+     void performRecap(ctx).catch(() => {
+diff --git a/features/recap.feature b/features/recap.feature
+index cec01ead20e2faead7cbb5c1114e9b1927b64817..debf59e75ad7259cc277f96b4d0d8111590f3ee3 100644
+--- a/features/recap.feature
++++ b/features/recap.feature
+@@ -33,19 +33,13 @@ Feature: Session Recap
+     Then a concise recap is generated
+     And it is displayed above the editor with the format "✦ Recap: <summary>"
+ 
+-  Scenario: First user prompt starts an immediate in-progress recap
+-    Given a new TUI session with no previous recap
+-    When the user submits their first prompt
+-    Then recap generation starts before the agent turn settles
+-    And the widget tells the user that work is being recapped
+-    And the completed turn can later refresh the recap with its outcome
+-    And settling the turn is not delayed by the in-progress recap
+-
+-  Scenario: In-progress recap does not claim requested work is complete
+-    Given a new TUI session with no previous recap
+-    When the first prompt is being recapped before the assistant responds
+-    Then the recap prompt identifies the work as starting or planned
+-    And it forbids claiming actions, files, connections, or results that are not evidenced
++  Scenario: Widget pairs the previous step with the current goal
++    Given an active TUI session with a recap of the previous step
++    When the user submits a prompt and the agent starts running
++    Then the widget keeps showing the previous step's "✦ Recap:" line
++    And it adds a "◐ Goal:" line derived from the current prompt
++    When the run settles
++    Then the goal line is cleared and the recap is refreshed with the completed step
+ 
+   Scenario: Recap is informative and scannable
+     Given a raw model summary
+@@ -161,14 +155,13 @@ Feature: Session Recap
+     Then the recap generator prompt includes the previous recap and the latest exchange
+     And produces an updated progressive summary
+ 
+-  Scenario: Regeneration replaces the recap line with a generation marker
++  Scenario: Regeneration keeps the previous recap visible
+     Given an active session in TUI mode with a visible recap
+     When recap generation starts
+-    Then the above-editor line shows only an animated "⠹ Recapping..."
+-    And the generation marker carries no "· Working..." activity suffix
+-    And the "✦ Recap:" line is hidden while generation is running
++    Then the above-editor line still shows the previous "✦ Recap:" content
++    And it also shows an animated "⠹ Recapping..." activity marker
+     When recap generation finishes
+-    Then the generation marker is replaced by the new recap
++    Then the activity marker is cleared and the recap shows the new summary
+ 
+   Scenario: Recap preserves a leading inline code marker
+     Given the recap starts with the inline code marker "`list_directory_sessions`"

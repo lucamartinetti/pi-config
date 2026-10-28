@@ -1,0 +1,62 @@
+name: dependabot-sync
+
+# Dependabot only bumps agent/vendor/package.json and the lockfile. This
+# rebuilds the vendored trees from the new tarballs, rebases the patches,
+# pushes the result onto the Dependabot branch, and re-runs CI on it.
+
+on:
+  pull_request:
+    paths:
+      - agent/vendor/package.json
+      - agent/vendor/package-lock.json
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - name: Install vendored dependencies
+        run: node scripts/deps.mjs install
+      - name: Re-vendor and rebase patches
+        run: |
+          if ! node scripts/deps.mjs sync 2> sync.err; then
+            cat sync.err >&2
+            {
+              echo '### Patches need a manual rebase'
+              echo
+              echo 'Run `node scripts/deps.mjs install && node scripts/deps.mjs sync` on this branch locally and follow its instructions.'
+              echo
+              echo '```'
+              cat sync.err
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          rm -f sync.err
+      - name: Verify
+        run: node scripts/deps.mjs check
+      - name: Push the regenerated tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          git add -A agent/vendor
+          if git diff --cached --quiet; then
+            echo "vendored trees already up to date"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "vendor: re-vendor and rebase patches"
+          git push origin "HEAD:$BRANCH"
+          gh workflow run ci.yml --ref "$BRANCH"

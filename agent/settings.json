@@ -8,10 +8,12 @@
     "*/*"
   ],
   "packages": [
-    "npm:@mrclrchtr/supi-prompt-suggestions",
-    "npm:@mrclrchtr/supi-settings",
-    "npm:pi-verdict",
-    "npm:pi-web-access"
+    "./vendor/@fradser/pi-recap",
+    "./vendor/@mrclrchtr/supi-prompt-suggestions",
+    "./vendor/@mrclrchtr/supi-settings",
+    "./vendor/@tintinweb/pi-subagents",
+    "./vendor/pi-verdict",
+    "./vendor/pi-web-access"
   ],
   "hideThinkingBlock": false
 }

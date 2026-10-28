@@ -5,14 +5,24 @@ agent/auth.json
 agent/models-store.json
 agent/bin/
 
-# Installed extension code — reproducible from agent/npm/package-lock.json + settings.json
-agent/npm/node_modules/
+# Dependencies of the vendored packages — reproducible with
+# `node scripts/deps.mjs install` from agent/vendor/package-lock.json
+agent/vendor/node_modules/
+agent/vendor/**/node_modules
+
+# pi's own package roots; unused, every package is vendored
+agent/npm/
+agent/git/
 
 # Session transcripts (private; intentionally not backed up here)
 agent/sessions/
 
 # Runtime state
 agent/pi-subagents/
+agent/pi-web-access/
 agent/mcp.json
 agent/web-search.json
 subagent-schedules/
+
+# Local git worktrees
+/.worktrees

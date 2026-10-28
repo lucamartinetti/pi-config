@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Refuse commits whose vendored trees no longer match pins + patches, e.g. a
+# hand edit in agent/vendor/<pkg>/ that was never recorded with `deps patch`.
+#
+# Opt in once per clone:  git config core.hooksPath .githooks
+# Bypass one commit:      git commit --no-verify
+set -euo pipefail
+
+if ! git diff --cached --name-only --diff-filter=ACMRD | grep -qE '^agent/(vendor/|settings\.json$)'; then
+	exit 0
+fi
+
+root=$(git rev-parse --show-toplevel)
+exec node "$root/scripts/deps.mjs" check

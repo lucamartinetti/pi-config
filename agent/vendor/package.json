@@ -1,0 +1,13 @@
+{
+  "name": "pi-config-vendor",
+  "private": true,
+  "description": "Upstream pins for the pi packages vendored into this directory. Exact versions only; see scripts/deps.mjs.",
+  "dependencies": {
+    "@fradser/pi-recap": "0.1.11",
+    "@mrclrchtr/supi-prompt-suggestions": "11.1.0",
+    "@mrclrchtr/supi-settings": "11.1.0",
+    "@tintinweb/pi-subagents": "0.22.0",
+    "pi-verdict": "0.15.0",
+    "pi-web-access": "0.45.0"
+  }
+}
