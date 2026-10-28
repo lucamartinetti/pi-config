@@ -25,9 +25,11 @@ const RECORD = path.join(VENDOR, "vendored.json");
 const SETTINGS = path.join(AGENT, "settings.json");
 const META = "deps-meta.json"; // stored in a rebase repo's .git/
 
-// The temp repos must not pick up the user's hooks, signing or templates.
+// The temp repos must not pick up the user's hooks, signing or templates, nor
+// any GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE inherited from a git hook,
+// which would point every temp-repo command at this repository instead.
 const GIT_ENV = {
-	...process.env,
+	...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))),
 	GIT_CONFIG_GLOBAL: os.devNull,
 	GIT_CONFIG_NOSYSTEM: "1",
 	GIT_AUTHOR_NAME: "deps",
@@ -52,7 +54,12 @@ function run(cmd, args, opts = {}) {
 	return r;
 }
 
-const git = (cwd, args, opts = {}) => run("git", args, { cwd, env: GIT_ENV, ...opts });
+// Only ever used on temp repos; refuse anything inside this checkout.
+function git(cwd, args, opts = {}) {
+	const rel = path.relative(ROOT, path.resolve(cwd));
+	if (!rel.startsWith("..") && !path.isAbsolute(rel)) fail(`refusing to run git in ${cwd}`);
+	return run("git", args, { cwd, env: GIT_ENV, ...opts });
+}
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const writeJson = (file, value) => fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 // Temp dirs are removed on exit, except a rebase repo left for conflict resolution.
