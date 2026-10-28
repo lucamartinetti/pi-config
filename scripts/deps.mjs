@@ -316,6 +316,7 @@ function cmdResume([repo]) {
 	const n = exportPatches(repo, name, "next..fork");
 	install(name, repo, to, store);
 	writeRecord(store);
+	temps.add(repo);
 	console.log(`deps: ${name}@${to.version} vendored with ${n} patch(es)`);
 }
 
