@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Luca Martinetti <luca@luca.io>
+Date: Wed, 28 Oct 2026 08:51:12 +0000
+Subject: [PATCH 4/5] Show recap or live run state, never both
+
+While a run is active the widget hid the previous recap behind the live Goal,
+Thinking, and Trail lines. Hide the recap for the duration of the run and
+restore it once the run settles, so only one of the two states is ever shown.
+---
+ README.md              |  8 ++++----
+ extensions/index.ts    |  2 +-
+ features/recap.feature | 12 ++++++------
+ 3 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/README.md b/README.md
+index b05bbde0bb5da2fe51e3a8ab7e0e79512c3b457d..6ff45c922df82c43523c410f3c6ef9182c641efa 100644
+--- a/README.md
++++ b/README.md
+@@ -1,9 +1,9 @@
+ # @fradser/pi-recap
+ 
+-> Local fork. Keeps the previous `✦ Recap:` visible during regeneration and,
+-> while a run is active, adds an inferred `◐ Goal:` line (one model call at
+-> start, then at most one per 30s) plus free `💭 Thinking:` and `↳ Trail:` lines.
+-> See `~/.pi/README.md` for how it is wired up.
++> Local fork. While a run is active it hides the previous `✦ Recap:` and shows an
++> inferred `◐ Goal:` (one model call at start, then at most one per 30s) plus free
++> `💭 Thinking:` and `↳ Trail:` lines; when the run settles those clear and the
++> `✦ Recap:` returns. See `~/.pi/README.md` for how it is wired up.
+ 
+ Session recap for Pi — displays a concise, scannable summary of the current session above the TUI input box, inspired by Claude Code's `✦ Recap:` feature.
+ 
+diff --git a/extensions/index.ts b/extensions/index.ts
+index 4be12648b1cdc4ab7d6b6aa71e7dd153909e5af2..6a385842066217be749be31e4cf2236b0fd18887 100644
+--- a/extensions/index.ts
++++ b/extensions/index.ts
+@@ -186,7 +186,7 @@ export default function (pi: ExtensionAPI) {
+ 
+   function buildSections(): Array<{ icon: string; label: string; text: string }> {
+     const sections: Array<{ icon: string; label: string; text: string }> = [];
+-    if (currentRecap) {
++    if (!agentRunning && currentRecap) {
+       sections.push({ icon: "✦", label: "Recap:", text: currentRecap });
+     }
+     if (agentRunning) {
+diff --git a/features/recap.feature b/features/recap.feature
+index a2ffb73d3a616b59fa885b46611d99a9d376661a..35551b8b5b033d08df544efdca3f483ae726bd09 100644
+--- a/features/recap.feature
++++ b/features/recap.feature
+@@ -33,15 +33,15 @@ Feature: Session Recap
+     Then a concise recap is generated
+     And it is displayed above the editor with the format "✦ Recap: <summary>"
+ 
+-  Scenario: Widget pairs the previous step with the current goal
++  Scenario: Widget switches between recap and live run state
+     Given an active TUI session with a recap of the previous step
+     When the user submits a prompt and the agent starts running
+-    Then the widget keeps showing the previous step's "✦ Recap:" line
+-    And it adds a "◐ Goal:" line inferred from the run's activity
+-    And it adds a "💭 Thinking:" excerpt of the latest assistant reasoning
+-    And it adds a "↳ Trail:" sequence of recent tool actions
++    Then the previous step's "✦ Recap:" line is hidden
++    And the widget shows a "◐ Goal:" line inferred from the run's activity
++    And it shows a "💭 Thinking:" excerpt of the latest assistant reasoning
++    And it shows a "↳ Trail:" sequence of recent tool actions
+     When the run settles
+-    Then the running lines are cleared and the recap is refreshed with the completed step
++    Then the running lines are cleared and the "✦ Recap:" line is shown again
+ 
+   Scenario: Goal inference is throttled during a run
+     Given a running agent with goal inference enabled

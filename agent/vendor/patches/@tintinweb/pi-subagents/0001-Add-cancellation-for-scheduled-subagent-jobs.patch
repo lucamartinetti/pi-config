@@ -1,0 +1,616 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Luca Martinetti <luca@luca.io>
+Date: Wed, 28 Oct 2026 08:51:13 +0000
+Subject: [PATCH] Add cancellation for scheduled subagent jobs
+
+A schedule could only be stopped by a human at /agents -> Scheduled jobs,
+so a recurring "monitor X until it finishes" interval had no way to end
+itself and the model that created it had no way to stop it.
+
+- manage_schedule tool (list / cancel / pause / resume); cancel removes
+  the job and aborts its in-flight run
+- self-cancellation: recurring fires are told to end with the line
+  [schedule-complete] once done, and the scheduler removes the job
+- maxRuns and cancelOn auto-cancel; settled one-shots are removed
+- subagents:rpc:schedules:list / cancel cross-extension RPCs
+---
+ CHANGELOG.md               |   7 ++
+ README.md                  |   8 +-
+ src/agent-runner.ts        |   1 +
+ src/cross-extension-rpc.ts |  43 ++++++++-
+ src/index.ts               |  78 +++++++++++++++-
+ src/schedule.ts            | 176 +++++++++++++++++++++++++++++++------
+ src/types.ts               |  14 ++-
+ src/ui/schedule-menu.ts    |  40 ++++++---
+ 8 files changed, 326 insertions(+), 41 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c2c2bfae747c41d0f03eeb8929cb6bc6a54797e5..0b3a9a342f61d61ed46051673df08ed3fca11c09 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ## [Unreleased]
+ 
++### Added
++- **Scheduled jobs can now auto-cancel and be cancelled programmatically.** Previously a schedule could only be stopped by a human at `/agents → Scheduled jobs`, so a recurring "monitor X until it finishes" interval had no way to end itself and the model that created it had no way to stop it. Three additions close that gap:
++  - **`manage_schedule` tool** (`list` / `cancel` / `pause` / `resume`) — the programmatic counterpart to the menu, with `job_id` resolving an id or a unique name. `cancel` removes the job and aborts its in-flight run. Registered whenever scheduling is enabled and excluded from subagent tool inheritance like the other orchestration tools.
++  - **Self-cancellation** — every recurring fire's prompt is appended with a short `[scheduler]` note naming the job id and instructing the agent to end its final reply with the exact line `[schedule-complete]` once the schedule's purpose is met. The scheduler matches that marker in the run's result and removes the job. Existing jobs get the note at their next fire, so no re-creation is required.
++  - **Declarative auto-cancel** — `maxRuns` (remove after N runs) and `cancelOn` (remove when a run's result contains a substring) on `ScheduledSubagent`/`NewJobInput`, and fired one-shots are now removed once settled instead of lingering as disabled records. The `subagents:scheduled` `removed` event carries a `reason` (`manual`, `self`, `cancel-on`, `max-runs`, `one-shot`).
++  - **Cross-extension RPCs** — `subagents:rpc:schedules:list` and `subagents:rpc:schedules:cancel`, so an extension that scheduled work can stop it without a UI.
++
+ ## [0.22.0] - 2026-10-13
+ 
+ > **⚠️ Possibly breaking — background completion delivery changed ([#388](https://github.com/tintinweb/pi-subagents/pull/388)):**
+diff --git a/README.md b/README.md
+index 0c09622deff1e7ba33cec59c43c58ae15a384eae..66ae685b9462f84af0b00ddbef41d30a5b91c36d 100644
+--- a/README.md
++++ b/README.md
+@@ -109,7 +109,13 @@ Schedule formats:
+ 
+ When a schedule fires, the spawn runs in background and its completion notification arrives the same way as a manually-spawned background agent's — your parent agent reasons about the result the same way.
+ 
+-Schedules are **session-scoped**: they reset on `/new` and restore on `/resume`. List and cancel via `/agents → Scheduled jobs` (creation is the `Agent` tool's job — there is no parallel manual-create wizard). Storage at `<cwd>/.pi/subagent-schedules/<sessionId>.json` with PID-based file locking for cross-instance safety.
++Schedules are **session-scoped**: they reset on `/new` and restore on `/resume`. List and cancel via `/agents → Scheduled jobs` (creation is the `Agent` tool's job — there is no parallel manual-create wizard), from the model with `manage_schedule`, or from another extension via the `subagents:rpc:schedules:list` / `subagents:rpc:schedules:cancel` RPCs. Storage at `<cwd>/.pi/subagent-schedules/<sessionId>.json` with PID-based file locking for cross-instance safety.
++
++### Managing and auto-cancelling jobs
++
++- **`manage_schedule`** — an LLM-callable tool, registered whenever scheduling is on, with `action: list | cancel | pause | resume` and a `job_id` (id or unique name). `cancel` removes the job so it never fires again and aborts an in-flight run.
++- **Self-cancel from the run** — every recurring fire's prompt is appended with a short `[scheduler]` note naming the job id and telling the agent to end its reply with the exact line `[schedule-complete]` when the schedule's purpose is achieved and no further runs are needed. The scheduler sees that marker in the run's result and removes the job (event reason `self`). This is what lets a "monitor X until it finishes" interval stop itself instead of firing forever.
++- **Declarative auto-cancel** — `ScheduledSubagent.maxRuns` (remove after N runs), `ScheduledSubagent.cancelOn` (remove when a run's result contains a substring), and one-shots (removed once settled, reason `one-shot`). These are set through `NewJobInput.max_runs` / `cancel_on`; the `subagents:scheduled` `removed` event carries the `reason` (`manual`, `self`, `cancel-on`, `max-runs`, `one-shot`).
+ 
+ **Disable the feature entirely**: `/agents → Settings → Scheduling → disabled` removes `schedule` from the `Agent` tool spec (no LLM-context cost), hides the menu entry, and stops any active scheduler. The schema-level removal takes effect on the next pi session; the runtime kill is immediate. Re-enable from the same menu.
+ 
+diff --git a/src/agent-runner.ts b/src/agent-runner.ts
+index 1c4403d67c868a8825b18abcc88018860f5a0f45..83d06a268f31a18839deeaac28242b5d713deaad 100644
+--- a/src/agent-runner.ts
++++ b/src/agent-runner.ts
+@@ -46,6 +46,7 @@ export const SUBAGENT_TOOL_NAMES = {
+   WORKFLOW: "SubagentWorkflow",
+   GET_RESULT: "get_subagent_result",
+   STEER: "steer_subagent",
++  MANAGE_SCHEDULE: "manage_schedule",
+ } as const;
+ 
+ /** Names of tools registered by this extension that subagents must NOT inherit. */
+diff --git a/src/cross-extension-rpc.ts b/src/cross-extension-rpc.ts
+index 251450a0e840b6042139859639c9471807bf71f3..4c704dbf658270e262ef5d6ecb843f61559702f1 100644
+--- a/src/cross-extension-rpc.ts
++++ b/src/cross-extension-rpc.ts
+@@ -16,7 +16,7 @@
+ import { isTopLevelAgent } from "./agent-manager.js";
+ import { type ModelRegistry, resolveModel } from "./model-resolver.js";
+ import { checkModelScope } from "./model-scope.js";
+-import type { AgentRecord } from "./types.js";
++import type { AgentRecord, ScheduledSubagent } from "./types.js";
+ 
+ /** Minimal event bus interface needed by the RPC handlers. */
+ export interface EventBus {
+@@ -57,6 +57,19 @@ export interface RpcDeps {
+   pi: unknown;                    // passed through to manager.spawn
+   getCtx: () => unknown | undefined;  // returns current ExtensionContext
+   manager: SpawnCapable;
++  /**
++   * Optional access to the session's scheduler, so another extension can list
++   * and cancel scheduled jobs. Absent when scheduling is disabled.
++   */
++  schedules?: ScheduleCapable;
++}
++
++/** Minimal scheduler surface the schedule RPCs need. */
++export interface ScheduleCapable {
++  isActive(): boolean;
++  list(): ScheduledSubagent[];
++  /** Resolve by id or unambiguous name and cancel, aborting an in-flight run. */
++  cancelJob(ref: string): { ok: true; job: ScheduledSubagent } | { ok: false; error: string };
+ }
+ 
+ export interface RpcHandle {
+@@ -64,6 +77,8 @@ export interface RpcHandle {
+   unsubSpawn: () => void;
+   unsubStop: () => void;
+   unsubConsume: () => void;
++  unsubSchedulesList: () => void;
++  unsubSchedulesCancel: () => void;
+ }
+ 
+ /**
+@@ -95,7 +110,7 @@ function handleRpc<P extends { requestId: string }>(
+  * Returns unsub functions for cleanup.
+  */
+ export function registerRpcHandlers(deps: RpcDeps): RpcHandle {
+-  const { events, pi, getCtx, manager } = deps;
++  const { events, pi, getCtx, manager, schedules } = deps;
+ 
+   const unsubPing = handleRpc(events, "subagents:rpc:ping", () => {
+     return { version: PROTOCOL_VERSION };
+@@ -194,5 +209,27 @@ export function registerRpcHandlers(deps: RpcDeps): RpcHandle {
+     },
+   );
+ 
+-  return { unsubPing, unsubSpawn, unsubStop, unsubConsume };
++  // Schedules are a session-scoped resource, but unlike agents there is no
++  // ownership token to hand out — a job is either the caller's to stop or it
++  // is not, and the extension that created it retains the only id. So these
++  // RPCs expose the same whole-session view the `/agents` menu shows, which is
++  // exactly what an orchestrating extension needs to clean up after itself.
++  const requireScheduler = (): ScheduleCapable => {
++    if (!schedules || !schedules.isActive()) throw new Error("Scheduler is not active in this session");
++    return schedules;
++  };
++
++  const unsubSchedulesList = handleRpc(events, "subagents:rpc:schedules:list", () => {
++    return { jobs: requireScheduler().list() };
++  });
++
++  const unsubSchedulesCancel = handleRpc<{ requestId: string; jobId: string }>(
++    events, "subagents:rpc:schedules:cancel", ({ jobId }) => {
++      const result = requireScheduler().cancelJob(jobId);
++      if (!result.ok) throw new Error(result.error);
++      return { id: result.job.id, name: result.job.name };
++    },
++  );
++
++  return { unsubPing, unsubSpawn, unsubStop, unsubConsume, unsubSchedulesList, unsubSchedulesCancel };
+ }
+diff --git a/src/index.ts b/src/index.ts
+index 6ab4e1f761c106673d13ba1bc42474e33c7ae5db..e83962374aca98468216cea006acce8c93d9ae09 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -835,6 +835,13 @@ export default function (pi: ExtensionAPI) {
+             return true;
+           },
+         },
++        // Only meaningful when scheduling is on; the handlers throw a clear
++        // "not active" error otherwise rather than pretending the feature exists.
++        schedules: {
++          isActive: () => scheduler.isActive(),
++          list: () => scheduler.list(),
++          cancelJob: (ref) => scheduler.cancelJob(ref),
++        },
+       });
+       // Broadcast readiness so extensions loaded alongside us can discover us.
+       // Emitting after all factories have run (rather than at factory time)
+@@ -1114,6 +1121,8 @@ export default function (pi: ExtensionAPI) {
+     rpcHandle?.unsubStop();
+     rpcHandle?.unsubPing();
+     rpcHandle?.unsubConsume();
++    rpcHandle?.unsubSchedulesList();
++    rpcHandle?.unsubSchedulesCancel();
+     rpcHandle = undefined;
+     currentCtx = undefined;
+     // Only release the global slot if this activation claimed it — a child
+@@ -1565,7 +1574,7 @@ export default function (pi: ExtensionAPI) {
+     isSchedulingEnabled() ? scheduleParamShape : {};
+ 
+   const scheduleGuideline = isSchedulingEnabled()
+-    ? `\n- Use \`schedule\` only when the user explicitly asked for scheduled / recurring / delayed execution (e.g. "every Monday", "in an hour"). Don't auto-schedule from vague intent like "monitor X" — run once now or ask.`
++    ? `\n- Use \`schedule\` only when the user explicitly asked for scheduled / recurring / delayed execution (e.g. "every Monday", "in an hour"). Don't auto-schedule from vague intent like "monitor X" — run once now or ask. To list or cancel scheduled jobs, call \`manage_schedule\` (actions: list, cancel, pause, resume).`
+     : "";
+ 
+   // Same trade as scheduleParam/scheduleGuideline above: `isolationParam` drops
+@@ -3026,6 +3035,73 @@ Terse command-style prompts produce shallow, generic work.
+     },
+   }));
+ 
++  // ---- manage_schedule tool ----
++
++  // Registered only when scheduling is enabled, mirroring the schedule param.
++  // This is the programmatic counterpart to `/agents → Scheduled jobs`: it lets
++  // the model cancel (or pause) a job it created without a human at the menu,
++  // and gives an orchestrating extension a tool-level path alongside the RPCs.
++  if (isSchedulingEnabled()) {
++    registerToolReportingUsage(defineTool({
++      name: SUBAGENT_TOOL_NAMES.MANAGE_SCHEDULE,
++      label: "Manage Scheduled Jobs",
++      description:
++        "List, cancel, pause, or resume this session's scheduled subagent jobs (the jobs created by passing `schedule` to the Agent tool). " +
++        "Cancelling removes the job so it never fires again and aborts its in-flight run, if one is running.",
++      promptSnippet: "List or cancel scheduled subagent jobs",
++      parameters: Type.Object({
++        action: Type.Union(
++          [
++            Type.Literal("list"),
++            Type.Literal("cancel"),
++            Type.Literal("pause"),
++            Type.Literal("resume"),
++          ],
++          { description: "`list` shows every job; `cancel`/`pause`/`resume` act on `job_id`." },
++        ),
++        job_id: Type.Optional(
++          Type.String({
++            description: "Job id or name. Required for cancel/pause/resume.",
++          }),
++        ),
++      }),
++      execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
++        if (!scheduler.isActive()) {
++          return textResult("Scheduler is not active in this session yet. Try again after the session has fully started.");
++        }
++        const action = params.action as string;
++        if (action === "list") {
++          const jobs = scheduler.list();
++          if (jobs.length === 0) return textResult("No scheduled jobs in this session.");
++          const blocks = jobs.map(job => {
++            const next = scheduler.getNextRun(job.id);
++            return [
++              `${job.enabled ? "[enabled]" : "[paused]"}  ${job.name}  (id: ${job.id})`,
++              `  schedule: ${job.schedule} (${job.scheduleType}) | runs: ${job.runCount}${job.maxRuns != null ? `/${job.maxRuns}` : ""}`,
++              `  last: ${job.lastRun ?? "—"} (${job.lastStatus ?? "—"}) | next: ${next ?? "—"}`,
++              job.cancelOn ? `  auto-cancel on output containing: ${job.cancelOn}` : "",
++            ].filter(Boolean).join("\n");
++          });
++          return textResult(`Scheduled jobs (${jobs.length}):\n\n${blocks.join("\n\n")}`);
++        }
++        if (!params.job_id) {
++          return textResult(`\`job_id\` is required for action "${action}".`);
++        }
++        if (action === "cancel") {
++          const result = scheduler.cancelJob(params.job_id);
++          if (!result.ok) return textResult(result.error);
++          return textResult(`Cancelled scheduled job "${result.job.name}" (id: ${result.job.id}). It will not fire again.`);
++        }
++        if (action === "pause" || action === "resume") {
++          const result = scheduler.setJobEnabled(params.job_id, action === "resume");
++          if (!result.ok) return textResult(result.error);
++          return textResult(`${action === "pause" ? "Paused" : "Resumed"} scheduled job "${result.job.name}" (id: ${result.job.id}).`);
++        }
++        return textResult(`Unknown action "${action}". Use list, cancel, pause, or resume.`);
++      },
++    }));
++  }
++
+   // ---- /agents interactive menu ----
+ 
+   // Directory resolution and the frontmatter edits live in agent-file-toggle.ts
+diff --git a/src/schedule.ts b/src/schedule.ts
+index 1e3facc0d32996e919ae173fef157e906ae4d081..cdd79fe3d7755a96448481d81bb4656c8a6a1241 100644
+--- a/src/schedule.ts
++++ b/src/schedule.ts
+@@ -28,11 +28,26 @@ import type { IsolationMode, ScheduledSubagent, SubagentType, ThinkingLevel } fr
+ /** Event emitted on `pi.events` for cross-extension consumers. */
+ export type ScheduleChangeEvent =
+   | { type: "added"; job: ScheduledSubagent }
+-  | { type: "removed"; jobId: string }
++  /**
++   * A job left the store. `reason` distinguishes an explicit cancellation from
++   * the scheduler's own auto-cancel policies: "manual", "self" (the run
++   * emitted the completion marker), "cancel-on" (matched `cancelOn`),
++   * "max-runs", or "one-shot" (a one-shot fire is removed once it settles).
++   */
++  | { type: "removed"; jobId: string; reason: string }
+   | { type: "updated"; job: ScheduledSubagent }
+   | { type: "fired"; jobId: string; agentId: string; name: string }
+   | { type: "error"; jobId: string; error: string };
+ 
++/**
++ * Exact line a scheduled run can end with to cancel its own job. Injected into
++ * every recurring fire's prompt (see `buildFireDirective`), so an agent that
++ * sees the monitored condition resolved can stop the schedule without anyone
++ * calling a tool. Chosen to be inert in ordinary prose so it cannot trip by
++ * accident.
++ */
++export const SCHEDULE_SELF_CANCEL_MARKER = "[schedule-complete]";
++
+ /** Params accepted at job creation — ID, timestamps, and state are derived. */
+ export interface NewJobInput {
+   name: string;
+@@ -45,6 +60,10 @@ export interface NewJobInput {
+   max_turns?: number;
+   isolated?: boolean;
+   isolation?: IsolationMode;
++  /** Auto-cancel after this many runs. */
++  max_runs?: number;
++  /** Auto-cancel when a run's result contains this substring. */
++  cancel_on?: string;
+ }
+ 
+ export class SubagentScheduler {
+@@ -108,6 +127,8 @@ export class SubagentScheduler {
+       max_turns: input.max_turns,
+       isolated: input.isolated,
+       isolation: input.isolation,
++      maxRuns: input.max_runs,
++      cancelOn: input.cancel_on,
+       enabled: true,
+       createdAt: new Date().toISOString(),
+       runCount: 0,
+@@ -127,15 +148,66 @@ export class SubagentScheduler {
+     return job;
+   }
+ 
+-  removeJob(id: string): boolean {
++  removeJob(id: string, reason = "manual"): boolean {
+     const store = this.requireStore();
+     if (!store.get(id)) return false;
+     this.unscheduleJob(id);
+     const ok = store.remove(id);
+-    if (ok) this.emit({ type: "removed", jobId: id });
++    if (ok) this.emit({ type: "removed", jobId: id, reason });
+     return ok;
+   }
+ 
++  /**
++   * Resolve a job by id, or by an unambiguous name. Returns undefined when the
++   * ref matches nothing, or when several jobs share the name (a name is only
++   * unique among *existing* jobs at creation time, so a rename could collide).
++   * An `id` always wins over a same-string name.
++   */
++  resolveJob(ref: string): ScheduledSubagent | undefined {
++    const store = this.store;
++    if (!store) return undefined;
++    const byId = store.get(ref);
++    if (byId) return byId;
++    const byName = store.list().filter(job => job.name === ref);
++    return byName.length === 1 ? byName[0] : undefined;
++  }
++
++  /**
++   * Cancel a job programmatically: resolve the ref, stop any in-flight run it
++   * spawned, then remove it from the store. Returns a discriminated result so
++   * tool and RPC callers can report an honest failure instead of silently
++   * no-opping.
++   */
++  cancelJob(ref: string): { ok: true; job: ScheduledSubagent } | { ok: false; error: string } {
++    const job = this.resolveJob(ref);
++    if (!job) {
++      const names = this.list().map(j => j.name);
++      return {
++        ok: false,
++        error: names.length
++          ? `No scheduled job matches "${ref}". Known jobs: ${names.join(", ")}.`
++          : `No scheduled job matches "${ref}". There are no scheduled jobs in this session.`,
++      };
++    }
++    if (job.activeAgentId) {
++      const record = this.manager?.getRecord(job.activeAgentId);
++      if (record?.status === "running" || record?.status === "queued") {
++        this.manager?.abort(job.activeAgentId);
++      }
++    }
++    this.removeJob(job.id, "manual");
++    return { ok: true, job };
++  }
++
++  /** Pause (enabled=false) or resume (enabled=true) a job by id or name. */
++  setJobEnabled(ref: string, enabled: boolean): { ok: true; job: ScheduledSubagent } | { ok: false; error: string } {
++    const job = this.resolveJob(ref);
++    if (!job) return { ok: false, error: `No scheduled job matches "${ref}".` };
++    const updated = this.updateJob(job.id, { enabled });
++    if (!updated) return { ok: false, error: `Scheduled job "${ref}" disappeared.` };
++    return { ok: true, job: updated };
++  }
++
+   /** Toggle / mutate a job. Re-arms based on the new `enabled` state. */
+   updateJob(id: string, patch: Partial<ScheduledSubagent>): ScheduledSubagent | undefined {
+     const store = this.requireStore();
+@@ -177,13 +249,10 @@ export class SubagentScheduler {
+         const target = new Date(job.schedule).getTime();
+         const delay = target - Date.now();
+         if (delay > 0) {
+-          const t = setTimeout(() => {
+-            this.executeJob(job.id);
+-            // Auto-disable one-shots after they fire (mirrors pi-cron-schedule)
+-            store.update(job.id, { enabled: false });
+-            const updated = store.get(job.id);
+-            if (updated) this.emit({ type: "updated", job: updated });
+-          }, delay);
++          // One-shots are removed by executeJob once the run settles (reason
++          // "one-shot") — a fire that is disabled but stays in the store reads
++          // as an active job in every list surface. Nothing to re-arm here.
++          const t = setTimeout(() => this.executeJob(job.id), delay);
+           this.intervals.set(job.id, t);
+         } else {
+           // Past timestamp — disable, mark error, never fire
+@@ -248,7 +317,7 @@ export class SubagentScheduler {
+       // fire-time failure.
+       const dispatch = resolveSpawnType(job.subagent_type);
+       if (!dispatch.ok) throw new Error(dispatch.message);
+-      agentId = manager.spawn(pi, ctx, dispatch.type, job.prompt, {
++      agentId = manager.spawn(pi, ctx, dispatch.type, this.promptForFire(job), {
+         description: job.description,
+         isBackground: true,
+         bypassQueue: true,
+@@ -272,26 +341,20 @@ export class SubagentScheduler {
+           isolation: job.isolation,
+         },
+       });
++      // Remember what this fire spawned so a programmatic cancel can abort an
++      // in-flight run, not just stop future ticks.
++      store.update(id, { activeAgentId: agentId });
+     } catch (err) {
+       const error = err instanceof Error ? err.message : String(err);
+-      store.update(id, { lastRun: new Date().toISOString(), lastStatus: "error" });
+       this.emit({ type: "error", jobId: id, error });
++      // A fire that never spawned still counts, so a one-shot is cleaned up
++      // and `max_runs` still reaches its ceiling on repeated failures.
++      this.finishRun(id, "error", "");
+       return;
+     }
+ 
+     this.emit({ type: "fired", jobId: id, agentId, name: job.name });
+ 
+-    const finalize = (status: "success" | "error") => {
+-      const next = this.getNextRun(id);
+-      const current = store.get(id);
+-      store.update(id, {
+-        lastRun: new Date().toISOString(),
+-        lastStatus: status,
+-        runCount: (current?.runCount ?? 0) + 1,
+-        nextRun: next,
+-      });
+-    };
+-
+     // AgentManager's promise resolves either way (its .catch returns ""), so we
+     // can't infer success/failure from the promise — read record.status instead.
+     // Terminal states: completed/steered = success; error/aborted/stopped = error.
+@@ -302,9 +365,72 @@ export class SubagentScheduler {
+       .then(() => {
+         const r = manager.getRecord(agentId);
+         const failed = r?.status === "error" || r?.status === "aborted" || r?.status === "stopped";
+-        finalize(failed ? "error" : "success");
++        this.finishRun(id, failed ? "error" : "success", r?.result ?? "");
+       })
+-      .catch(() => finalize("error"));
++      .catch(() => this.finishRun(id, "error", ""));
++  }
++
++  /**
++   * The prompt a fire runs with: the author's prompt plus the self-cancel
++   * contract. Recurring jobs learn their id and how to stop future runs; a
++   * one-shot is left untouched (it is removed after the single run anyway).
++   */
++  private promptForFire(job: ScheduledSubagent): string {
++    if (job.scheduleType === "once") return job.prompt;
++    const lines = [
++      "",
++      "---",
++      `[scheduler] This is run #${(job.runCount ?? 0) + 1} of scheduled job "${job.name}" (id: ${job.id}); it will fire again on its schedule unless cancelled.`,
++      `If this run has achieved the schedule's purpose and no further runs are needed, end your final reply with the exact line ${SCHEDULE_SELF_CANCEL_MARKER} on its own line — the scheduler will then cancel the job automatically.`,
++      "Otherwise omit that line.",
++    ];
++    if (job.cancelOn) lines.push(`The job also cancels itself when a run's output contains: ${job.cancelOn}`);
++    if (job.maxRuns != null) {
++      lines.push(`It auto-cancels after ${job.maxRuns} run${job.maxRuns === 1 ? "" : "s"}.`);
++    }
++    return `${job.prompt}\n${lines.join("\n")}`;
++  }
++
++  /**
++   * Record a run's outcome, then apply the auto-cancel policies. Returns with
++   * the store updated — or with the job removed entirely, in which case the
++   * `runCount`/`lastStatus` write is skipped (removal is the terminal state).
++   */
++  private finishRun(jobId: string, status: "success" | "error", resultText: string): void {
++    const store = this.store;
++    if (!store) return;
++    const current = store.get(jobId);
++    if (!current) return; // cancelled while the run was in flight — nothing to record
++
++    const runCount = (current.runCount ?? 0) + 1;
++    const reason = this.autoCancelReason(current, runCount, status, resultText);
++    if (reason) {
++      this.removeJob(jobId, reason);
++      return;
++    }
++    store.update(jobId, {
++      lastRun: new Date().toISOString(),
++      lastStatus: status,
++      runCount,
++      activeAgentId: undefined,
++    });
++    // Computed after the write above so an interval job's next run is counted
++    // from this fire, not from the previous one.
++    store.update(jobId, { nextRun: this.getNextRun(jobId) });
++  }
++
++  /** Which auto-cancel policy, if any, this run tripped. Most specific wins. */
++  private autoCancelReason(
++    job: ScheduledSubagent,
++    runCount: number,
++    status: "success" | "error",
++    resultText: string,
++  ): string | undefined {
++    if (status === "success" && resultText.includes(SCHEDULE_SELF_CANCEL_MARKER)) return "self";
++    if (job.cancelOn && resultText.includes(job.cancelOn)) return "cancel-on";
++    if (job.maxRuns != null && runCount >= job.maxRuns) return "max-runs";
++    if (job.scheduleType === "once") return "one-shot";
++    return undefined;
+   }
+ 
+   private emit(event: ScheduleChangeEvent): void {
+diff --git a/src/types.ts b/src/types.ts
+index bbe148a876dc7b4ff5949e05a6d8f79e54523d19..3a7f78bcd30ec4cd14212160e7141c7dabf4c787 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -381,15 +381,27 @@ export interface ScheduledSubagent {
+   isolated?: boolean;
+   isolation?: IsolationMode;
+ 
++  // auto-cancel policy
++  /** Optional ceiling: after this many runs the job cancels itself. */
++  maxRuns?: number;
++  /**
++   * Optional substring matched against each run's final result; a match
++   * cancels the job. The same effect can be requested by the job itself at
++   * fire time — see `SCHEDULE_SELF_CANCEL_MARKER` in schedule.ts.
++   */
++  cancelOn?: string;
++
+   // state
+   enabled: boolean;
+   /** ISO timestamp. */
+   createdAt: string;
+   lastRun?: string;
+-  lastStatus?: "success" | "error" | "running";
++  lastStatus?: "success" | "error" | "running" | "cancelled";
+   /** Refreshed on every fire and on store load. */
+   nextRun?: string;
+   runCount: number;
++  /** Agent id of the currently-running fire, while one is in flight. */
++  activeAgentId?: string;
+ }
+ 
+ export interface ScheduleStoreData {
+diff --git a/src/ui/schedule-menu.ts b/src/ui/schedule-menu.ts
+index 53e19257200daed1212850ac5bd7f200b2c57a29..14cbc964398a7abae18c651a31ae8f9d748717db 100644
+--- a/src/ui/schedule-menu.ts
++++ b/src/ui/schedule-menu.ts
+@@ -1,11 +1,12 @@
+ /**
+  * schedule-menu.ts — `/agents → Scheduled jobs` submenu.
+  *
+- * Minimal v1 surface: list scheduled jobs, select one to inspect details +
+- * confirm cancellation. No create wizard (the `Agent` tool's `schedule` param
+- * is the canonical creation path), no toggle/cleanup (cancel is enough for
+- * "I scheduled something dumb, get rid of it"). Add management surfaces here
+- * if real demand emerges.
++ * List scheduled jobs, then act on one: cancel (inspect details, confirm, and
++ * abort an in-flight run), pause future runs, or resume them. No create wizard
++ * (the `Agent` tool's `schedule` param is the canonical creation path). The
++ * same operations are available to the model via `manage_schedule` and to
++ * other extensions via the `subagents:rpc:schedules:*` RPCs — this menu is the
++ * human-facing surface over the same scheduler methods.
+  */
+ 
+ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+@@ -91,15 +92,34 @@ export async function showSchedulesMenu(
+   // against a parallel label array cancelled whichever came first.
+   const job = await selectItem(
+     ctx.ui,
+-    `Scheduled jobs (${jobs.length}) — select to cancel`,
++    `Scheduled jobs (${jobs.length}) — select to manage`,
+     jobs,
+     j => formatJob(j, scheduler),
+   );
+   if (!job) return;
+ 
+-  const ok = await ctx.ui.confirm(`Cancel "${job.name}"?`, formatDetails(job, scheduler));
+-  if (!ok) return;
++  const actions = [
++    { key: "cancel" as const, label: "Cancel job (remove it; stops an in-flight run)" },
++    { key: "pause" as const, label: "Pause future runs" },
++    { key: "resume" as const, label: "Resume future runs" },
++  ];
++  const action = await selectItem(
++    ctx.ui,
++    `"${job.name}" — choose an action`,
++    actions,
++    a => a.label,
++  );
++  if (!action) return;
++
++  if (action.key === "cancel") {
++    const ok = await ctx.ui.confirm(`Cancel "${job.name}"?`, formatDetails(job, scheduler));
++    if (!ok) return;
++    scheduler.cancelJob(job.id);
++    ctx.ui.notify(`Cancelled "${job.name}".`, "info");
++    return;
++  }
+ 
+-  scheduler.removeJob(job.id);
+-  ctx.ui.notify(`Cancelled "${job.name}".`, "info");
++  const enable = action.key === "resume";
++  scheduler.setJobEnabled(job.id, enable);
++  ctx.ui.notify(`${enable ? "Resumed" : "Paused"} "${job.name}".`, "info");
+ }

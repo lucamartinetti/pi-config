@@ -1,0 +1,26 @@
+{
+  "@fradser/pi-recap": {
+    "version": "0.1.11",
+    "integrity": "sha512-4fTQwTFDbJojRYVLfIwMRyAACNLHrZ5VENaxtLDBAugnHWi2b+zj0sXpdaiRoHTLQ8Wv7RnHoI4DWeGTqwafWg=="
+  },
+  "@mrclrchtr/supi-prompt-suggestions": {
+    "version": "11.0.1",
+    "integrity": "sha512-nAqnIq937OVak4Fchrs1H1JhA7DX57FW/dxQzorBp1vviBTvuOSCNt/XJegp/KLCford5zYhaSXsQlToHeWDRw=="
+  },
+  "@mrclrchtr/supi-settings": {
+    "version": "11.0.1",
+    "integrity": "sha512-dxhV4h3HFn8gzo6EYGG5RhNBSvPEMn0fJetyo3DWiZR/RvLANhztwejZPvzsy7/S6M5ZOX1j/javkyc6nzVOuw=="
+  },
+  "@tintinweb/pi-subagents": {
+    "version": "0.22.0",
+    "integrity": "sha512-vkpH930uAi/Y8KOyc4+D7bSNgrL8xX4TAdMF6AWTqFjs2BTxuSobZ4ViA5jcL87FmyKb7O1X+r6ZPiEVTk3GQg=="
+  },
+  "pi-verdict": {
+    "version": "0.15.0",
+    "integrity": "sha512-dTlB+EExz+uCU68AIW19HnH7OFAxnlD006KIVaCgfhg6sTLaYd3zIUvZ0yd38bXTXZAU08mLKZlnw5oAVyxXsw=="
+  },
+  "pi-web-access": {
+    "version": "0.45.0",
+    "integrity": "sha512-AHgUKUas1vvBtdKbcv+7rWTPTIOl8xHR4E7s4dLBAz6soSGGPC4YNq1uVGuH5+bVrMx4X/fmPCm4rsOQIxexdQ=="
+  }
+}

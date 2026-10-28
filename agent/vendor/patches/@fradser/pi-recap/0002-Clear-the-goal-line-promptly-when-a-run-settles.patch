@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Luca Martinetti <luca@luca.io>
+Date: Wed, 28 Oct 2026 08:51:12 +0000
+Subject: [PATCH 2/5] Clear the goal line promptly when a run settles
+
+agent_settled cleared the in-flight goal but only repainted inside
+performRecap, which returns early when no recap model or complete exchange
+exists. The mounted widget kept the stale goal. Repaint right after clearing
+the goal, before attempting the recap refresh.
+---
+ extensions/index.ts | 14 +++++---------
+ 1 file changed, 5 insertions(+), 9 deletions(-)
+
+diff --git a/extensions/index.ts b/extensions/index.ts
+index d91acf5cd4da2ea3cb709b4999acfa89e9f3bd59..f322b3a875883daa9e5a2350fcd35bce6f14dbf8 100644
+--- a/extensions/index.ts
++++ b/extensions/index.ts
+@@ -538,18 +538,14 @@ export default function (pi: ExtensionAPI) {
+   // Automatically update recap after each turn
+   pi.on("agent_settled", async (_event, ctx) => {
+     // The run is over: drop the in-flight goal so only the completed recap
+-    // remains once the new recap has been generated.
++    // remains. Repaint immediately; the recap refresh below may be skipped
++    // when there is no configured model or no complete exchange to recap.
+     agentRunning = false;
+     currentGoal = "";
+-    if (!shouldRecap) {
+-      updateRecapWidget(ctx);
+-      return;
+-    }
++    updateRecapWidget(ctx);
++    if (!shouldRecap) return;
+     shouldRecap = false;
+-    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) {
+-      updateRecapWidget(ctx);
+-      return;
+-    }
++    if (ctx.mode !== "tui" || !config.enabled || !config.autoRecap) return;
+     void performRecap(ctx).catch(() => {
+       // Background recap must not create an unhandled rejection during teardown.
+     });

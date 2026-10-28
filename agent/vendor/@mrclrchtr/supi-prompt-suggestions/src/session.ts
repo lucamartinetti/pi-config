@@ -1,0 +1,281 @@
+/**
+ * Session lifecycle management for supi-prompt-suggestions.
+ *
+ * Owns the ghost editor wrapper, status spinner, and suggestion generator
+ * orchestration across the session lifecycle.
+ *
+ * @module
+ */
+
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { StatusSpinner } from "@mrclrchtr/supi-core/api";
+import { recordDebugEvent } from "@mrclrchtr/supi-core/debug";
+import { type GhostTextCallbacks, GhostTextEditor } from "./editor/editor.ts";
+import { formatSuggestionWarning, type SuggestionWarning } from "./generation/failure.ts";
+import type { GenerationStatus, SuggestionGenerator } from "./generation/generator.ts";
+
+const EMBEDDED_EDITOR_CALLBACKS: GhostTextCallbacks = {
+  onAccept: () => {},
+  onDismiss: () => {},
+};
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+type SessionTextContent = string | { type: string; text?: string }[] | undefined;
+
+/** Narrow shape for session message entries used in history seeding. */
+interface SessionMessageEntry {
+  type: "message";
+  message?: {
+    role?: string;
+    stopReason?: string;
+    content?: SessionTextContent;
+  };
+}
+
+type SessionBranchEntry = {
+  type: string;
+  message?: SessionMessageEntry["message"];
+};
+
+// ── SessionLifecycle ───────────────────────────────────────────────────────
+
+/**
+ * Manages the prompt-suggestions extension lifecycle across session events.
+ *
+ * Owns the ghost editor, status spinner, and wires suggestion generation
+ * results to the UI.  Instances are created once per extension load and
+ * reused across session restarts.
+ */
+export class SessionLifecycle {
+  private ghostEditor: GhostTextEditor | null = null;
+  private statusSpinner: StatusSpinner | null = null;
+  private generationInFlight = false;
+  private lifecycleId = 0;
+
+  constructor(private generator: SuggestionGenerator) {}
+
+  // ── Session events ──────────────────────────────────────────────
+
+  /** Install the ghost editor wrapper, seed UP-arrow history, and recreate the spinner. */
+  onStart(ctx: ExtensionContext): void {
+    this.lifecycleId++;
+    this.generator.reset();
+    this.statusSpinner?.stop();
+    this.statusSpinner = null;
+    this.ghostEditor = null;
+    if (ctx.mode !== "tui") return;
+
+    this.statusSpinner = new StatusSpinner(ctx, "supi-prompt-suggestions");
+    this.installEditor(ctx);
+  }
+
+  /** Extract the last settled assistant message and fire suggestion generation. */
+  onAgentSettled(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui") return;
+
+    const lifecycleId = this.lifecycleId;
+    const lastAssistant = extractLastAssistantText(ctx.sessionManager.getBranch());
+    if (!lastAssistant) {
+      recordDebugEvent({
+        source: "prompt-suggestions",
+        level: "debug",
+        category: "generation.skipped",
+        message: "Prompt suggestion generation skipped: no assistant message to suggest from",
+        cwd: ctx.cwd,
+        data: { reason: "no-assistant-text" },
+      });
+      this.statusSpinner?.stop();
+      this.generationInFlight = false;
+      return;
+    }
+
+    if (ctx.ui.getEditorText() !== "") {
+      recordDebugEvent({
+        source: "prompt-suggestions",
+        level: "debug",
+        category: "generation.skipped",
+        message: "Prompt suggestion generation skipped: editor not empty at settle",
+        cwd: ctx.cwd,
+        data: {
+          reason: "editor-not-empty-at-settle",
+          editorTextLen: ctx.ui.getEditorText().length,
+        },
+      });
+      this.statusSpinner?.stop();
+      return;
+    }
+
+    this.generator.start(ctx, lastAssistant, {
+      onStatus: (status: GenerationStatus) => {
+        if (lifecycleId !== this.lifecycleId) return;
+        this.handleStatus(status, ctx);
+      },
+    });
+  }
+
+  /** Dismiss in-flight generation, stop spinner, clear ghost text. */
+  onAgentStart(): void {
+    this.lifecycleId++;
+    this.statusSpinner?.stop();
+    this.generationInFlight = false;
+    this.generator.dismiss();
+    this.ghostEditor?.clearGhost();
+  }
+
+  /** Full cleanup on session shutdown. */
+  onShutdown(): void {
+    this.lifecycleId++;
+    this.statusSpinner?.stop();
+    this.generationInFlight = false;
+    this.generator.reset();
+    this.ghostEditor?.clearGhost();
+  }
+
+  /** Invalidate generation and warning state after settings persistence. */
+  onSettingsChanged(): void {
+    this.lifecycleId++;
+    this.statusSpinner?.stop();
+    this.generationInFlight = false;
+    this.generator.reset();
+    this.ghostEditor?.clearGhost();
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────
+
+  private handleStatus(status: GenerationStatus, ctx: ExtensionContext): void {
+    switch (status.kind) {
+      case "generating":
+        this.generationInFlight = true;
+        this.statusSpinner?.start("generating suggestion…");
+        break;
+      case "ready":
+        this.generationInFlight = false;
+        this.statusSpinner?.stop();
+        if (ctx.ui.getEditorText() === "") {
+          this.ghostEditor?.setSuggestion(status.suggestion);
+        } else {
+          recordDebugEvent({
+            source: "prompt-suggestions",
+            level: "debug",
+            category: "generation.skipped",
+            message: "Prompt suggestion dropped: editor not empty at delivery",
+            cwd: ctx.cwd,
+            data: {
+              reason: "editor-not-empty-at-delivery",
+              suggestionLen: status.suggestion.length,
+              editorTextLen: ctx.ui.getEditorText().length,
+            },
+          });
+        }
+        break;
+      case "error":
+        this.generationInFlight = false;
+        this.statusSpinner?.stop();
+        if (status.warning) this.notifyWarning(status.warning, ctx);
+        break;
+      case "idle":
+        this.generationInFlight = false;
+        this.statusSpinner?.stop();
+        break;
+    }
+  }
+
+  private notifyWarning(warning: SuggestionWarning, ctx: ExtensionContext): void {
+    if (ctx.hasUI) ctx.ui.notify(formatSuggestionWarning(warning), "warning");
+  }
+
+  private buildCallbacks(): GhostTextCallbacks {
+    return {
+      onAccept: (_suggestion: string) => {
+        this.generator.dismiss();
+        this.ghostEditor?.clearGhost();
+      },
+      onDismiss: () => {
+        this.statusSpinner?.stop();
+        this.generationInFlight = false;
+        this.generator.dismiss();
+        this.ghostEditor?.clearGhost();
+      },
+      onInput: () => this.abortPendingGeneration(),
+    };
+  }
+
+  private abortPendingGeneration(): void {
+    if (!this.generationInFlight) return;
+    this.statusSpinner?.stop();
+    this.generationInFlight = false;
+    this.generator.dismiss();
+  }
+
+  /**
+   * Seed the editor's UP-arrow message history from session user messages.
+   *
+   * The Editor base class stores history in-memory via `addToHistory()` when
+   * messages are submitted.  Since `setEditorComponent` replaces the editor
+   * with a fresh instance on every `session_start` (including `/reload`), the
+   * in-memory history is lost.  Reading from `sessionManager.getBranch()`
+   * repopulates it from the current conversation path so history survives
+   * reloads without pulling prompts from abandoned branches.
+   *
+   * Cross-module save/restore (capturing the old editor's history in
+   * `session_shutdown` and restoring in `session_start`) does not work here
+   * because `/reload` creates fresh module instances — the old module's
+   * closure variables are destroyed before the new module can read them.
+   */
+  private seedHistoryFromSession(editor: GhostTextEditor, ctx: ExtensionContext): void {
+    const entries = ctx.sessionManager.getBranch();
+    for (const entry of entries) {
+      if (entry.type !== "message") continue;
+      const msg = (entry as SessionMessageEntry).message;
+      if (msg?.role !== "user") continue;
+      const text = extractTextContent(msg.content).trim();
+      if (text) editor.addToHistory(text);
+    }
+  }
+
+  private installEditor(ctx: ExtensionContext): void {
+    let mainEditorPending = true;
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      // PI creates the installed editor when setEditorComponent is called. Later
+      // factory calls can create embedded editors for forms, so they do not own suggestions.
+      const isMainEditor = mainEditorPending;
+      mainEditorPending = false;
+      const editor = new GhostTextEditor(tui, theme, keybindings, {
+        callbacks: isMainEditor ? this.buildCallbacks() : EMBEDDED_EDITOR_CALLBACKS,
+      });
+      if (isMainEditor) {
+        this.ghostEditor = editor;
+        this.seedHistoryFromSession(editor, ctx);
+      }
+      return editor;
+    });
+  }
+}
+
+// ── Free helpers ───────────────────────────────────────────────────────────
+
+function extractLastAssistantText(entries: readonly SessionBranchEntry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.type !== "message") continue;
+
+    const msg = entry.message;
+    if (msg?.role === "assistant") {
+      if (msg.stopReason !== "stop") return null;
+      const textContent = extractTextContent(msg.content).trim();
+      return textContent || null;
+    }
+  }
+  return null;
+}
+
+function extractTextContent(content: SessionTextContent): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter((c) => c.type === "text")
+    .map((c) => c.text ?? "")
+    .join("\n");
+}

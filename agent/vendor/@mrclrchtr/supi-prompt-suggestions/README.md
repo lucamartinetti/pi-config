@@ -1,0 +1,91 @@
+<div align="center">
+  <a href="https://github.com/mrclrchtr/supi/tree/main/packages/supi-prompt-suggestions">
+    <img src="https://raw.githubusercontent.com/mrclrchtr/supi/main/packages/supi-prompt-suggestions/assets/social-preview.png" alt="SuPi Prompt Suggestions" width="100%">
+  </a>
+</div>
+
+# @mrclrchtr/supi-prompt-suggestions
+
+[![GitHub stars](https://img.shields.io/github/stars/mrclrchtr/supi)](https://github.com/mrclrchtr/supi/stargazers) [![npm downloads](https://img.shields.io/npm/dm/@mrclrchtr/supi-prompt-suggestions)](https://www.npmjs.com/package/@mrclrchtr/supi-prompt-suggestions)
+
+Advisory ghost-text prompt suggestions for the [pi coding agent](https://github.com/earendil-works/pi).
+
+<p align="center">
+  <a href="https://raw.githubusercontent.com/mrclrchtr/supi/main/packages/supi-prompt-suggestions/assets/demo.mp4">
+    <img src="https://raw.githubusercontent.com/mrclrchtr/supi/main/packages/supi-prompt-suggestions/assets/demo.gif" width="100%" alt="Demo of ghost-text prompt suggestions">
+  </a>
+</p>
+
+## Install
+
+Requires Pi 0.86.0 or later.
+
+```bash
+pi install npm:@mrclrchtr/supi-prompt-suggestions
+```
+
+## What it does
+
+After each assistant response, the extension can suggest a concise next prompt as dim ghost text in the editor.
+
+Suggestions only appear when:
+
+- you selected a suggestion model in `/supi-settings`
+- the editor is empty
+- the model finds a useful follow-up
+
+## Using suggestions
+
+| Key | Action |
+|-----|--------|
+| `→` / Right Arrow / `Tab` | Accept the suggestion into the editor without submitting it |
+| `Esc` | Dismiss the visible suggestion |
+| Any text input | Hide the suggestion and continue typing |
+| Delete all editor text | Restore the hidden suggestion |
+
+Accepted suggestions are inserted into the editor so you can edit them before sending. A hidden suggestion remains available until you accept it, dismiss it, or start new agent work.
+
+## Configuration
+
+Open `/supi-settings` → **Prompt suggestions**.
+
+- **Suggestion model** — choose `disabled` or one of PI's scoped enabled models
+
+The default is `disabled`. Pick a cheap, fast model if you want lightweight suggestions after assistant turns.
+
+Settings follow SuPi's normal scoped config behavior: set a global default, then override it per project when needed.
+
+Suggestion requests use PI's registry simple-completion path. PI owns authentication, provider
+routing, and context-aware output limits; the extension does not resolve or copy credentials.
+
+## Privacy
+
+When suggestions are enabled, the suggestion model receives only the last assistant message, trimmed to the final 8,000 characters.
+
+The extension does **not** send:
+
+- the full conversation transcript
+- tool outputs
+- file contents
+- project metadata
+- session metadata in the prompt
+
+The request can include a separate opaque provider-routing identity. It is not part of the prompt and
+is derived from the PI session, provider, model, and prompt-suggestion stream.
+
+## Troubleshooting
+
+If no suggestion appears:
+
+- confirm **Suggestion model** is not `disabled`
+- confirm the selected model is still enabled in PI for the current scope
+- if a warning reports authentication failed, check the selected model's authentication in PI
+- make sure the editor is empty after the assistant finishes
+- wait for the suggestion spinner to finish; generation times out after about 20 seconds
+
+Request failures show one warning for the active model and session. The warning contains only the
+provider/model identifier, a safe failure category, and an optional HTTP status. Categories include
+authentication failed, billing failed, quota exceeded, rate limit exceeded, timeout, and provider
+request failed. Repeated failures stay quiet until a request succeeds, settings change, or a new
+session starts. Warning state is held in memory, so `/reload` also starts a new warning cycle. The
+separate routing identity remains stable for the same PI session.
