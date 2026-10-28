@@ -122,22 +122,67 @@ installed.
 
 ### How updates arrive
 
-1. Dependabot checks `agent/vendor/` weekly and opens a PR once a release is at
-   least 7 days old (minor and patch bumps grouped, majors separate). It only
-   changes `package.json` and the lockfile.
-2. `.github/workflows/dependabot-sync.yml` runs `deps sync` on that PR: it
-   re-vendors each bumped package and replays its patches onto the new version
-   with `git rebase`, then pushes the regenerated tree to the Dependabot branch
-   and dispatches CI on it.
-3. CI (`.github/workflows/ci.yml`) runs `deps install`, `deps check`, and
-   gitleaks. Review the diff of the vendored code, then merge.
+Nothing changes on a machine until you merge a PR and pull it. Dependabot only
+proposes new pins; a workflow rebuilds the vendored code and replays the
+patches.
 
-If the patches conflict, the sync job fails and its summary shows the conflict.
-Resolve it locally (see below). Once a commit other than Dependabot's is on its
-branch, Dependabot stops rebasing that PR; comment `@dependabot recreate` to
-start it over.
+1. **Dependabot** checks `agent/vendor/` weekly and opens a PR once a release is
+   at least 7 days old, so a compromised release that gets yanked quickly never
+   arrives. Minor and patch bumps share one PR; each major gets its own. The PR
+   only changes `package.json` and the lockfile.
+2. **`.github/workflows/dependabot-sync.yml`** runs on that PR (Dependabot's
+   only) and calls `deps sync`, which for each bumped package:
+   - downloads the new tarball and checks its sha512 against the lockfile;
+   - unpacks it into `agent/vendor/<pkg>/`;
+   - replays `agent/vendor/patches/<pkg>/` onto the new version with
+     `git rebase`, a 3-way merge, so upstream edits near a patch usually apply
+     cleanly;
+   - refreshes the patch files and `vendored.json`.
+
+   It then runs `deps check`, commits the result to the Dependabot branch, and
+   starts CI with `gh workflow run ci.yml` — a push made with `GITHUB_TOKEN`
+   does not trigger workflows by itself.
+3. **CI** (`.github/workflows/ci.yml`) runs `deps install`, `deps check`, and
+   gitleaks. `deps check` rebuilds every tree from tarball + patches and fails
+   on any difference from what is committed.
+4. **Review and merge.** The PR diff is the upstream change to the vendored
+   code; read it there.
+5. **On each machine:**
+
+   ```bash
+   cd ~/.pi && git pull && node scripts/deps.mjs install
+   ```
+
+   `install` runs `npm ci` (exactly the lockfile, no lifecycle scripts) and
+   `npm audit signatures`.
 
 Dependabot also keeps the GitHub Actions current; they are pinned by commit SHA.
+
+#### When the patches conflict
+
+The sync job fails and its summary names the conflicting patch. Fix it on the
+PR branch:
+
+```bash
+gh pr checkout <n>
+node scripts/deps.mjs install
+node scripts/deps.mjs sync                 # stops and prints a temp rebase repo
+# in that repo: git status, edit, git add, git rebase --continue
+node scripts/deps.mjs resume /tmp/pi-deps-repo-XXXXXX
+node scripts/deps.mjs check
+git add -A agent/vendor && git commit -m "vendor: rebase patches" && git push
+```
+
+Once a commit other than Dependabot's is on its branch, Dependabot stops
+rebasing that PR; comment `@dependabot recreate` to start it over (and redo the
+fix).
+
+#### Not yet exercised
+
+The cycle above ran end to end only locally. Two GitHub steps await the first
+real Dependabot PR: the sync job pushing to Dependabot's branch, and the
+dispatched CI run showing up as a check on the PR. If either fails, run
+`deps sync` on the branch by hand as in the conflict steps and push.
 
 ### Changing a vendored package
 
@@ -151,21 +196,18 @@ That appends one patch to `agent/vendor/patches/<pkg>/`. Commit the patch and
 the edited tree together. To drop a patch, delete its file and run
 `node scripts/deps.mjs sync <pkg> --force`.
 
-### Updating by hand or resolving a conflict
+### Updating by hand
+
+To move a pin without waiting for Dependabot (on a branch, in a worktree):
 
 ```bash
 cd agent/vendor && npm install <pkg>@<version> && cd ../..
 node scripts/deps.mjs sync          # re-vendor and rebase patches
-```
-
-On a conflict, `sync` leaves a temporary git repo with the rebase stopped and
-prints its path. Resolve there with plain git (`git status`, edit, `git add`,
-`git rebase --continue`), then:
-
-```bash
-node scripts/deps.mjs resume /tmp/pi-deps-repo-XXXXXX
 node scripts/deps.mjs check
 ```
+
+`.npmrc` makes `npm install` save the exact version. A conflict is resolved
+with `resume` as [above](#when-the-patches-conflict).
 
 ### Commands
 
