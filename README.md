@@ -15,20 +15,24 @@ read it for the forks and the wiring.
 | `agent/models.json` | Custom model definitions and per-model provider routing |
 | `agent/agents/` | Four subagents: `planner`, `reviewer`, `scout`, `worker` |
 | `agent/extensions/reload-runtime.ts` | `/reload-runtime` command + `reload_runtime` tool |
+| `agent/extensions/no-update-check.ts` | Turns off pi's startup check for a newer pi release |
 | `agent/vendor/` | Every third-party pi package, pinned, verified, and patched where needed |
 | `agent/config/`, `agent/supi/`, `agent/recap.json` | Config for the permission gate, prompt suggestions, and recap |
 | `scripts/deps.mjs` | Installs, verifies, re-vendors, and patches `agent/vendor/` |
 
 Vendored packages:
 
-| Package | Version | Local patches | Purpose |
-|---|---|---|---|
-| `@fradser/pi-recap` | 0.1.11 | 5 | `◐ Goal:` / `↳ Activity:` lines while a run is active, `✦ Recap:` when idle |
-| `@tintinweb/pi-subagents` | 0.22.0 | 1 | Subagents, plus cancellation for scheduled jobs |
-| `@mrclrchtr/supi-prompt-suggestions` | 11.0.1 | — | Ghost-text next-prompt suggestions |
-| `@mrclrchtr/supi-settings` | 11.0.1 | — | `/supi-settings` UI (required by the above) |
-| `pi-verdict` | 0.15.0 | — | Classifier-backed tool permission gate |
-| `pi-web-access` | 0.45.0 | — | Web search and fetch |
+| Package | Version | Local patches | Purpose | Its dependencies |
+|---|---|---|---|---|
+| `@fradser/pi-recap` | 0.1.11 | 5 | `◐ Goal:` / `↳ Activity:` lines while a run is active, `✦ Recap:` when idle | `@fradser/pi-kit` |
+| `@tintinweb/pi-subagents` | 0.22.0 | 1 | Subagents, plus cancellation for scheduled jobs | `croner`, `nanoid` |
+| `@mrclrchtr/supi-prompt-suggestions` | 11.1.0 | — | Ghost-text next-prompt suggestions | `@mrclrchtr/supi-core` |
+| `@mrclrchtr/supi-settings` | 11.1.0 | — | `/supi-settings` UI (required by the above) | `@mrclrchtr/supi-core` |
+| `pi-verdict` | 0.15.0 | — | Classifier-backed tool permission gate | none |
+| `pi-web-access` | 0.45.0 | — | Web search and fetch | 9 direct, 188 in total (`@modelcontextprotocol/sdk`, `defuddle`, `undici`, `unpdf`, …) |
+
+Dependencies are locked in `agent/vendor/package-lock.json` and installed, not
+committed. The local patches are listed under [The forks](#the-forks).
 
 `node scripts/deps.mjs status` prints the current table.
 
@@ -178,20 +182,28 @@ All are `node scripts/deps.mjs <command>`.
 
 ## The forks
 
-Both are MIT-licensed upstream code. The patches carry the commit messages that
-explain each change.
+Two packages carry local patches; both are MIT-licensed upstream code. Each
+patch carries a commit message explaining the change, and they apply in order.
 
-- **`pi-recap`** — infers a `◐ Goal:` and a `↳ Activity:` line from recent tool
-  activity (two model calls when a run starts, then at most one pair every 30s),
-  shows a `💭 Thinking:` excerpt, hides the previous `✦ Recap:` while a run is
-  active, and raises the recap length limit from 120 to 200 characters. The
-  upstream tool-trail line is gone.
-- **`pi-subagents`** — adds `manage_schedule` (`list` / `cancel` / `pause` /
-  `resume`), a `[schedule-complete]` marker that lets a recurring agent cancel
-  itself, `maxRuns` / `cancelOn` auto-cancel, removal of settled one-shots, and
-  `subagents:rpc:schedules:list` / `cancel` RPCs. See its `CHANGELOG.md`.
+| Package | Patch | Effect |
+|---|---|---|
+| `pi-recap` | 0001 Keep the previous recap visible and add a current-goal line | Upstream hides the recap while regenerating, so a run shows nothing. Keep the last recap and add a `◐ Goal:` line from the current prompt. |
+| `pi-recap` | 0002 Clear the goal line promptly when a run settles | Fix: a stale goal stayed on screen when no recap could be generated. |
+| `pi-recap` | 0003 Show inferred goal, thinking, and trail | Infer the goal from a bounded, redacted run digest (one model call at run start, then at most one per 30s); show a `💭 Thinking:` excerpt. |
+| `pi-recap` | 0004 Show recap or live run state, never both | Hide the previous recap while a run is active; restore it on settle. |
+| `pi-recap` | 0005 Replace the trail line with an Activity line | Add a model-written `↳ Activity:` line, drop the raw tool trail, raise the recap limit from 120 to 200 characters. |
+| `pi-subagents` | 0001 Add cancellation for scheduled subagent jobs | `manage_schedule` tool (`list` / `cancel` / `pause` / `resume`), a `[schedule-complete]` marker for self-cancelling recurring jobs, `maxRuns` / `cancelOn` auto-cancel, removal of settled one-shots, and `subagents:rpc:schedules:list` / `cancel` RPCs. |
 
 Neither fork is published.
+
+## Updating pi itself
+
+pi is not vendored; install it with its own installer. `no-update-check.ts`
+sets `PI_SKIP_VERSION_CHECK=1` so pi does not ask pi.dev for a newer release
+or show the "Update Available" banner on every start — pi has no setting for
+this, and its check runs after extensions load. Package update notices do not
+appear either, because pi skips local packages. Update pi deliberately with
+`pi update` and check this config still loads.
 
 ## Model notes
 
