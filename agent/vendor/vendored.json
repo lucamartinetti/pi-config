@@ -4,12 +4,12 @@
     "integrity": "sha512-4fTQwTFDbJojRYVLfIwMRyAACNLHrZ5VENaxtLDBAugnHWi2b+zj0sXpdaiRoHTLQ8Wv7RnHoI4DWeGTqwafWg=="
   },
   "@mrclrchtr/supi-prompt-suggestions": {
-    "version": "11.0.1",
-    "integrity": "sha512-nAqnIq937OVak4Fchrs1H1JhA7DX57FW/dxQzorBp1vviBTvuOSCNt/XJegp/KLCford5zYhaSXsQlToHeWDRw=="
+    "version": "11.1.0",
+    "integrity": "sha512-TxixzIIhiSocuCWaadXhkNilosr1wdle7AbJFzE+Plc/U1CLScMJgqMFxalHj3S9r81diaWzW1gjB51GQ7I01Q=="
   },
   "@mrclrchtr/supi-settings": {
-    "version": "11.0.1",
-    "integrity": "sha512-dxhV4h3HFn8gzo6EYGG5RhNBSvPEMn0fJetyo3DWiZR/RvLANhztwejZPvzsy7/S6M5ZOX1j/javkyc6nzVOuw=="
+    "version": "11.1.0",
+    "integrity": "sha512-f5OTRncPv4jmPlSDexwMLkN19r86Zc9SjKT2bYM1rTeocQoOfN+KrzMlWRsLGaBSTZUCYubbuYPvQo4RUDWoYw=="
   },
   "@tintinweb/pi-subagents": {
     "version": "0.22.0",

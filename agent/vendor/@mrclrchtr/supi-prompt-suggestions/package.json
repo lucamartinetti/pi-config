@@ -1,6 +1,6 @@
 {
   "name": "@mrclrchtr/supi-prompt-suggestions",
-  "version": "11.0.1",
+  "version": "11.1.0",
   "description": "Optional model-powered ghost-text prompt suggestions",
   "license": "MIT",
   "repository": {
@@ -48,7 +48,7 @@
     "video": "https://raw.githubusercontent.com/mrclrchtr/supi/main/packages/supi-prompt-suggestions/assets/demo.mp4"
   },
   "dependencies": {
-    "@mrclrchtr/supi-core": "11.0.1"
+    "@mrclrchtr/supi-core": "11.1.0"
   },
   "bundledDependencies": [
     "@mrclrchtr/supi-core"
