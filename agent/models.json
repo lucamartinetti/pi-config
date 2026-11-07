@@ -4,22 +4,32 @@
     "openrouter": {
       "modelOverrides": {
         "deepseek/deepseek-v4.1-flash-1017": {
-          "samplingParams": {
-            "provider": {
-              "order": ["together", "baseten"],
-              "allow_fallbacks": false
-            }
-          }
+          "maxTokens": 262144
         }
       },
       "models": [
         {
-          "id": "deepseek/deepseek-v4.1-flash:nitro",
-          "name": "DeepSeek V4.1 Flash (nitro)",
+          "id": "deepseek/deepseek-v4.1-flash-1017:nitro",
+          "name": "DeepSeek V4.1 Flash 1017 (nitro)",
           "reasoning": true,
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "xhigh": null,
+            "max": "max"
+          },
           "input": ["text", "image"],
           "contextWindow": 1048576,
-          "maxTokens": 943718
+          "maxTokens": 262144,
+          "cost": {
+            "input": 0.6,
+            "output": 2.4,
+            "cacheRead": 0.014,
+            "cacheWrite": 0
+          }
         }
       ]
     }
