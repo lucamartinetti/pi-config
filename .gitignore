@@ -26,3 +26,6 @@ subagent-schedules/
 
 # Local git worktrees
 /.worktrees
+
+# Managed pi install (releases/staging binaries, not config)
+agent/install/

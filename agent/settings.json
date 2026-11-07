@@ -1,7 +1,7 @@
 {
   "defaultProvider": "openrouter",
   "defaultModel": "deepseek/deepseek-v4.1-flash-1017:nitro",
-  "lastChangelogVersion": "1.4.0",
+  "lastChangelogVersion": "1.5.0",
   "theme": "light/dark",
   "enabledModels": [
     "openrouter/deepseek/deepseek-v4.1-flash-1017:nitro",
@@ -15,5 +15,9 @@
     "./vendor/pi-verdict",
     "./vendor/pi-web-access"
   ],
-  "hideThinkingBlock": false
+  "hideThinkingBlock": false,
+  "extensionChangelogVersions": {
+    "{\"source\":\"./vendor/@tintinweb/pi-subagents\",\"scope\":\"user\"}": "0.22.0",
+    "{\"source\":\"./vendor/pi-web-access\",\"scope\":\"user\"}": "0.45.0"
+  }
 }
